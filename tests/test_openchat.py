@@ -42,6 +42,11 @@ class TestFuzzyMatching:
     def test_similarity_substring(self):
         assert ocr.similarity("샌드코프 테스트", "샌드코프테스트") == 1.0
 
+    def test_short_fragment_is_not_a_match(self):
+        lines = [{"text": "다."}, {"text": "위 내용을 모두 확인하였습니다."}]
+        assert ocr.find_line(lines, "위 내용을 모두 확인하였습니다")["text"].startswith("위")
+        assert ocr.similarity("다.", "위 내용을 모두 확인하였습니다") < 0.6
+
     def test_find_line_excludes(self):
         lines = [{"text": "채팅방 나가기"}, {"text": "신고하고 나가기"}]
         assert ocr.find_line(lines, "나가기", exclude=["신고"])["text"] == "채팅방 나가기"

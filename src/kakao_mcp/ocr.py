@@ -92,7 +92,10 @@ def similarity(a: str, b: str) -> float:
     na, nb = normalize(a), normalize(b)
     if not na or not nb:
         return 0.0
-    if nb in na or na in nb:
+    short, long_ = sorted((na, nb), key=len)
+    # Containment only counts when lengths are comparable, so a stray "다."
+    # doesn't match "위 내용을 모두 확인하였습니다".
+    if short in long_ and len(short) >= 0.6 * len(long_):
         return 1.0
     return difflib.SequenceMatcher(None, na, nb).ratio()
 

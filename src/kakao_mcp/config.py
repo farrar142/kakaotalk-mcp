@@ -88,6 +88,7 @@ ROOM_MENU_ICON_OFFSET = (22, 57)  # chat room ≡ menu: (from right edge, y)
 FORM_OPTION_CHECK_X = 32  # radio/checkbox column on the create form
 FORM_CONFIRM_FROM_CENTER = 69  # "확인" sits right of the form center
 FORM_CANCEL_FROM_RIGHT = 62
+LEAVE_ACK_CHECK_OFFSET = 20  # owner-leave checkbox sits left of its label
 
 # Default output directory for downloaded images
 DEFAULT_IMAGE_OUTPUT_DIR = os.path.join(

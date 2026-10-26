@@ -40,6 +40,12 @@ VK_ESCAPE = 0x1B
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_WHEEL = 0x0800
+GA_ROOT = 2
+WM_CLOSE = 0x0010
+WM_GETTEXT = 0x000D
+
+CREATED_DIALOG_TITLE = "오픈채팅방을 만들었습니다."
+NO_RESULTS_TEXT = "검색 결과가 없습니다"
 
 SEPARATOR_RGB = (237, 237, 237)
 
@@ -115,6 +121,8 @@ def _wait_new_window(before: Set[int], pred: Callable[[int], bool] = lambda h: T
 
 
 def _focus(hwnd: int):
+    """Bring the top-level window containing ``hwnd`` to the foreground."""
+    hwnd = win32gui.GetAncestor(hwnd, GA_ROOT) or hwnd
     controller.bring_window_to_front(hwnd)
     time.sleep(config.WINDOW_ACTIVATE_WAIT_SEC)
     if _user32.GetForegroundWindow() != hwnd:
@@ -163,6 +171,36 @@ def _set_text(edit_hwnd: int, text: str):
     for ch in text:
         win32api.SendMessage(edit_hwnd, WM_CHAR, ord("\r") if ch == "\n" else ord(ch), 0)
         time.sleep(config.SEARCH_CHAR_INTERVAL_SEC)
+
+
+def _paste_text(edit_hwnd: int, text: str):
+    """Replace a RichEdit's text by click-focus + Ctrl+A + clipboard paste.
+
+    KakaoTalk's description box ignores WM_CHAR for its own model (text shows,
+    but the counter stays 0 and nothing is saved); real paste input is needed.
+    """
+    r = win32gui.GetWindowRect(edit_hwnd)
+    root = win32gui.GetAncestor(edit_hwnd, GA_ROOT)
+    left, top, _, _ = win32gui.GetWindowRect(root)
+    _click(root, (r[0] + r[2]) / 2 - left, (r[1] + r[3]) / 2 - top)
+    controller._send_ctrl_key_combo(config.VK_A)
+    time.sleep(config.KEY_COMBO_WAIT_SEC)
+    win32clipboard.OpenClipboard()
+    try:
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
+    finally:
+        win32clipboard.CloseClipboard()
+    time.sleep(config.CLIPBOARD_PASTE_WAIT_SEC)
+    controller._send_ctrl_key_combo(0x56)  # Ctrl+V
+    time.sleep(0.3)
+
+
+def _get_text(hwnd: int) -> str:
+    """Read an Edit control's text from another process (WM_GETTEXT)."""
+    buf = ctypes.create_unicode_buffer(1024)
+    _user32.SendMessageW(hwnd, WM_GETTEXT, len(buf), buf)
+    return buf.value
 
 
 def _read_clipboard() -> str:
@@ -346,7 +384,7 @@ def _visible_results(oc_hwnd: int, at_top: bool = False) -> List[Dict]:
     items = []
     for top, bottom in _split_items(img):
         item = _parse_item(img, top, bottom)
-        if item and item["title"]:
+        if item and item["title"] and ocr.similarity(item["title"], NO_RESULTS_TEXT) < 0.8:
             item["complete"] = item["complete"] and (item["top"] > 0 or at_top)
             item["list_hwnd"] = lst
             items.append(item)
@@ -503,7 +541,7 @@ def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
             return _joined(room, already=not handled)
     if win32gui.IsWindow(preview) and win32gui.IsWindowVisible(preview):
         detail = _ocr_text(preview)
-        win32gui.PostMessage(preview, 0x0010, 0, 0)  # WM_CLOSE
+        win32gui.PostMessage(preview, WM_CLOSE, 0, 0)
         raise UIError(f"Join did not complete; preview still open: {detail}")
     raise UIError(f"Room window for '{room_title}' did not open")
 
@@ -584,12 +622,20 @@ def leave_room(room_name: str) -> Dict:
     if not btn:
         _press(VK_ESCAPE)
         raise UIError(f"Unexpected leave dialog: {' / '.join(ln['text'] for ln in lines)}")
+    # When the owner leaves, the room is closed and "나가기" stays disabled until
+    # the "위 내용을 모두 확인하였습니다." checkbox is ticked.
+    ack = ocr.find_line(lines, "위 내용을 모두 확인하였습니다", threshold=0.7)
+    if ack:
+        _click(dialog, ack["x"] - config.LEAVE_ACK_CHECK_OFFSET, ack["cy"])
     _click(dialog, btn["cx"], btn["cy"])
     gone = _wait_for(lambda: True if not (room and win32gui.IsWindow(room)
                                           and win32gui.IsWindowVisible(room)) else None, timeout=5)
     if not gone:
+        if win32gui.IsWindow(dialog) and win32gui.IsWindowVisible(dialog):
+            win32gui.PostMessage(dialog, WM_CLOSE, 0, 0)
         return {"success": False, "error": f"Room window '{room_name}' is still open after leaving"}
-    return {"success": True, "message": f"Left chat room '{room_name}'"}
+    msg = f"Left chat room '{room_name}'" + (" (owner left: the room was closed)" if ack else "")
+    return {"success": True, "room_closed": bool(ack), "message": msg}
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +669,22 @@ def _find_on_form(form: int, label: str, max_scrolls: int = 4,
     raise UIError(f"'{label}' not found on the create form")
 
 
+def _close_created_dialog(exclude: Set[int], timeout: float = 8) -> str:
+    """Close the modal "오픈채팅방을 만들었습니다." shown after creating; return its URL.
+
+    The modal blocks the new room window (input and focus) until it is closed.
+    """
+    dialog = _wait_for(lambda: next((h for h in _kakao_windows() - exclude
+                                     if win32gui.GetWindowText(h) == CREATED_DIALOG_TITLE), None), timeout)
+    if not dialog:
+        return ""
+    edit = next((c for c in _children(dialog, direct=False) if win32gui.GetClassName(c) == "Edit"), None)
+    url = _get_text(edit).strip() if edit else ""
+    win32gui.PostMessage(dialog, WM_CLOSE, 0, 0)
+    _wait_for(lambda: None if win32gui.IsWindow(dialog) and win32gui.IsWindowVisible(dialog) else True, 3)
+    return url
+
+
 def create_openchat(name: str, description: str = "", topic: str = "자유수다",
                     searchable: bool = True, kakao_profile_only: bool = False) -> Dict:
     """Create a group open chat room and return the new room's window title."""
@@ -654,8 +716,10 @@ def create_openchat(name: str, description: str = "", topic: str = "자유수다
         if not name_edit:
             raise UIError("Name field not found on the create form")
         _set_text(name_edit, name)
-        if description and desc_edit:
-            _set_text(desc_edit, description)
+        if description:
+            if not desc_edit:
+                raise UIError("Description field not found on the create form")
+            _paste_text(desc_edit, description)
 
         chip = _find_on_form(form, topic)
         _click(form, chip["cx"], chip["cy"])
@@ -680,10 +744,11 @@ def create_openchat(name: str, description: str = "", topic: str = "자유수다
                 pass
         raise
 
+    url = _close_created_dialog(exclude)
     room = _wait_for(lambda: _find_titled_window(name, exclude - {form}), timeout=8)
     if not room:
         still = win32gui.IsWindow(form) and win32gui.IsWindowVisible(form)
         detail = _ocr_text(form) if still else "form closed"
         return {"success": False, "error": f"Room window did not open after creating ({detail})"}
-    return {"success": True, "room_name": win32gui.GetWindowText(room),
+    return {"success": True, "room_name": win32gui.GetWindowText(room), "url": url,
             "message": f"Created open chat '{win32gui.GetWindowText(room)}'"}
