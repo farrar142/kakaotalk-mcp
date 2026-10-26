@@ -468,6 +468,9 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("KAKAO_MCP_PORT", "8765")))
     ap.add_argument("--auth-config", default=str(CONFIG_PATH),
                     help="auth.toml; when it exists, HTTP transports require OAuth/PAT tokens")
+    ap.add_argument("--insecure-no-auth", action="store_true",
+                    help="allow serving a non-localhost address without auth (anyone who can reach it "
+                         "controls KakaoTalk)")
     args = ap.parse_args()
 
     app.settings.host = args.host
@@ -476,6 +479,10 @@ def main():
 
     if auth_cfg is None:
         if args.transport != "stdio" and args.host not in ("127.0.0.1", "localhost", "::1"):
+            # Fail closed: a reverse proxy may forward the internet to this port.
+            if not args.insecure_no_auth:
+                sys.exit(f"Refusing to serve {args.host}:{args.port} without auth: {args.auth_config} not found. "
+                         "Run `kakaotalk-mcp auth init`, or pass --insecure-no-auth for a trusted LAN only.")
             # The default DNS-rebinding guard only accepts localhost Host headers,
             # which rejects remote clients. Restrict access with the firewall instead.
             app.settings.transport_security = None

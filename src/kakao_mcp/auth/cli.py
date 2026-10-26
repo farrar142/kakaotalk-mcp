@@ -19,8 +19,8 @@ def _read_password(args) -> str:
         pw = getpass.getpass("Owner password: ")
         if getpass.getpass("Repeat: ") != pw:
             sys.exit("Passwords do not match")
-    if len(pw) < 12:
-        sys.exit("Use at least 12 characters")
+    if len(pw) < 10:
+        sys.exit("Use at least 10 characters")
     return pw
 
 

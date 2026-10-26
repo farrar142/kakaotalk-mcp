@@ -23,6 +23,8 @@ while ($true) {
     Add-Content -Path $log -Encoding UTF8 -Value "=== $(Get-Date -Format s) starting on ${ListenHost}:$Port"
     # cmd redirection keeps the server's UTF-8 output as-is in the log
     cmd /c "`"$Python`" -m kakao_mcp --transport streamable-http --host $ListenHost --port $Port >> `"$log`" 2>&1"
-    Add-Content -Path $log -Encoding UTF8 -Value "=== $(Get-Date -Format s) exited with $LASTEXITCODE, restarting in 5s"
-    Start-Sleep -Seconds 5
+    $code = $LASTEXITCODE
+    Add-Content -Path $log -Encoding UTF8 -Value "=== $(Get-Date -Format s) exited with $code, restarting in 5s"
+    # Exit code 1 = refused to start (e.g. no auth.toml); retry slowly instead of spinning
+    Start-Sleep -Seconds $(if ($code -eq 1) { 60 } else { 5 })
 }
