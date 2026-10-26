@@ -145,6 +145,51 @@ def bring_window_to_front(hwnd: int):
     )
 
 
+FOREGROUND_ERROR = (
+    "Could not bring '{name}' to the foreground, so keyboard/clipboard input would not reach it. "
+    "The VM desktop is probably not being displayed: keep the Hyper-V/RDP window open (not minimized) "
+    "and the screen unlocked."
+)
+
+
+def activate_window(hwnd: int, name: str = "") -> Optional[str]:
+    """Bring ``hwnd`` to the foreground and confirm it. Returns an error message or None.
+
+    Keyboard events go to whichever window has focus, so callers must not type
+    or paste when this fails. It fails when the desktop isn't rendered — e.g. a
+    minimized Hyper-V enhanced-session/RDP window or a locked screen.
+    """
+    for _ in range(2):
+        bring_window_to_front(hwnd)
+        time.sleep(config.WINDOW_ACTIVATE_WAIT_SEC)
+        if _user32.GetForegroundWindow() == hwnd:
+            return None
+        time.sleep(0.3)
+    _log(f"activate_window failed for {name!r}: foreground is {_user32.GetForegroundWindow():#x}")
+    return FOREGROUND_ERROR.format(name=name or hex(hwnd))
+
+
+def _edit_text(edit_hwnd: int) -> str:
+    """Current text of an edit control in another process (WM_GETTEXT).
+
+    KakaoTalk's empty input box holds its placeholder ("메시지 입력") as text.
+    """
+    buf = ctypes.create_unicode_buffer(8192)
+    _user32.SendMessageW(edit_hwnd, 0x000D, len(buf), buf)  # WM_GETTEXT
+    return buf.value
+
+
+def _empty_clipboard():
+    try:
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+        finally:
+            win32clipboard.CloseClipboard()
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Keyboard helpers
 # ---------------------------------------------------------------------------
@@ -224,8 +269,9 @@ def send_message_to_room(room_name: str, text: str) -> Dict:
         return {"success": False, "error": f"Edit control not found in '{room_name}'"}
 
     # Bring window to foreground and focus the edit control
-    bring_window_to_front(hwnd)
-    time.sleep(config.WINDOW_ACTIVATE_WAIT_SEC)
+    err = activate_window(hwnd, room_name)
+    if err:
+        return {"success": False, "error": err}
 
     # Click on the edit control to ensure focus
     try:
@@ -239,20 +285,35 @@ def send_message_to_room(room_name: str, text: str) -> Dict:
     except Exception:
         pass
 
+    before = _edit_text(edit_hwnd)
+
     # Paste text via clipboard (handles Korean correctly, unlike WM_SETTEXT on some versions)
     win32clipboard.OpenClipboard()
     win32clipboard.EmptyClipboard()
     win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
     win32clipboard.CloseClipboard()
     time.sleep(config.CLIPBOARD_PASTE_WAIT_SEC)
+    if _user32.GetForegroundWindow() != hwnd:
+        return {"success": False, "error": FOREGROUND_ERROR.format(name=room_name)}
     _send_ctrl_key_combo(0x56)  # Ctrl+V
     time.sleep(config.AFTER_PASTE_WAIT_SEC)
+
+    # The paste must have landed in this room's input box before we press Enter
+    pasted = _edit_text(edit_hwnd)
+    if pasted == before:
+        return {"success": False, "error": f"Paste did not reach the input box of '{room_name}'"}
 
     # Press Enter using keybd_event (not WM_KEYDOWN — WM_KEYDOWN inserts newline in RICHEDIT)
     _user32.keybd_event(config.VK_RETURN, 0, 0, 0)
     _user32.keybd_event(config.VK_RETURN, 0, config.KEYEVENTF_KEYUP, 0)
 
-    return {"success": True, "message": f"Message sent to '{room_name}'"}
+    # Sending clears the box back to its placeholder; if the pasted text is still
+    # there, Enter didn't go through (e.g. a modal dialog was in the way)
+    for _ in range(10):
+        time.sleep(0.1)
+        if _edit_text(edit_hwnd) != pasted:
+            return {"success": True, "message": f"Message sent to '{room_name}'"}
+    return {"success": False, "error": f"Message is still in the input box of '{room_name}' (not sent)"}
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +469,9 @@ def send_image_to_room(room_name: str, image_path: str) -> Dict:
         return {"success": False, "error": f"Failed to copy image to clipboard: {e}"}
 
     # Bring KakaoTalk to front
-    bring_window_to_front(hwnd)
+    err = activate_window(hwnd, room_name)
+    if err:
+        return {"success": False, "error": err}
     time.sleep(config.IMAGE_FOCUS_WAIT_SEC)
 
     # Set keyboard focus to the RICHEDIT edit control using SetFocus.
@@ -500,8 +563,9 @@ def read_chat_messages(room_name: str) -> Dict:
         }
 
     # Bring the chat window to foreground — required for keybd_event
-    bring_window_to_front(hwnd)
-    time.sleep(config.WINDOW_ACTIVATE_WAIT_SEC)
+    err = activate_window(hwnd, room_name)
+    if err:
+        return {"success": False, "error": err, "raw_text": ""}
 
     # Click on the list control to ensure it has focus
     try:
@@ -515,6 +579,9 @@ def read_chat_messages(room_name: str) -> Dict:
     except Exception:
         pass
 
+    # Start from an empty clipboard so stale content is never returned as the chat
+    _empty_clipboard()
+
     # Ctrl+A (select all)
     _send_ctrl_key_combo(config.VK_A)
     time.sleep(config.KEY_COMBO_WAIT_SEC)
@@ -523,8 +590,19 @@ def read_chat_messages(room_name: str) -> Dict:
     _send_ctrl_key_combo(config.VK_C)
     time.sleep(config.KEY_COMBO_WAIT_SEC)
 
-    # Read clipboard
-    raw_text = _read_clipboard_text()
+    # Read clipboard (copying a long chat can take a moment)
+    raw_text = ""
+    for _ in range(5):
+        raw_text = _read_clipboard_text()
+        if raw_text:
+            break
+        time.sleep(0.2)
+    if not raw_text:
+        return {
+            "success": False,
+            "error": f"Nothing was copied from '{room_name}'. " + FOREGROUND_ERROR.format(name=room_name),
+            "raw_text": "",
+        }
 
     return {"success": True, "raw_text": raw_text}
 
@@ -609,14 +687,6 @@ def _activate_search_and_get_edit(main_hwnd: int) -> Optional[int]:
     return edit_hwnd
 
 
-def _ensure_foreground(hwnd: int) -> bool:
-    """Ensure a window is in the foreground. Returns True if successful."""
-    bring_window_to_front(hwnd)
-    time.sleep(config.WINDOW_ACTIVATE_WAIT_SEC)
-    fg = _user32.GetForegroundWindow()
-    return fg == hwnd
-
-
 def search_and_open_room(room_name: str) -> Dict:
     """Search for a chat room in KakaoTalk main window and open it.
 
@@ -633,8 +703,9 @@ def search_and_open_room(room_name: str) -> Dict:
         return {"success": False, "error": "KakaoTalk main window not found"}
 
     # Ensure KakaoTalk is in the foreground before sending keyboard events
-    if not _ensure_foreground(main_hwnd):
-        _log("Warning: Could not bring KakaoTalk to foreground")
+    err = activate_window(main_hwnd, config.KAKAO_MAIN_WINDOW_TITLE)
+    if err:
+        return {"success": False, "error": err}
 
     # Ctrl+F activates the search bar (Edit becomes visible and focused)
     edit_hwnd = _activate_search_and_get_edit(main_hwnd)
@@ -938,7 +1009,9 @@ def send_mention_message(room_name: str, mention_name: str, message: str) -> Dic
     win32api.SendMessage(edit_hwnd, WM_CLEAR, 0, 0)
 
     # Bring window to foreground and click on edit control for focus
-    bring_window_to_front(hwnd)
+    err = activate_window(hwnd, room_name)
+    if err:
+        return {"success": False, "error": err}
     time.sleep(config.MENTION_FOCUS_WAIT_SEC)
     try:
         rect = win32gui.GetWindowRect(edit_hwnd)

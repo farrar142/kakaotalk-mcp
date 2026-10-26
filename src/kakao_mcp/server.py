@@ -179,7 +179,8 @@ def kakao_read_messages(room_name: str, max_messages: int = 50) -> Dict:
             messages = messages[-max_messages:]
         return {
             "message": f"Read {len(messages)} messages from '{room_name}'",
-            "room_name": parsed["room_name"],
+            # KakaoTalk 26.x copies no header line, so fall back to the window title
+            "room_name": parsed["room_name"] or room_name,
             "member_count": parsed["member_count"],
             "messages": messages,
         }

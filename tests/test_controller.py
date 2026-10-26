@@ -101,15 +101,55 @@ def test_list_chat_windows(mock_gui):
 # send_message_to_room
 # ---------------------------------------------------------------------------
 
-@patch("kakao_mcp.controller.win32api")
-@patch("kakao_mcp.controller.find_child_window_recursive")
-@patch("kakao_mcp.controller.find_chat_window")
-def test_send_message_success(mock_find, mock_child, mock_api):
-    mock_find.return_value = 11111
-    mock_child.return_value = 22222
-    result = controller.send_message_to_room("TestRoom", "Hello")
+PLACEHOLDER = "메시지 입력"
+
+
+def _send_patches(edit_texts, foreground=11111, activate_error=None):
+    """Patch every input/clipboard side effect of send_message_to_room."""
+    return [
+        patch("kakao_mcp.controller.find_chat_window", return_value=11111),
+        patch("kakao_mcp.controller.find_child_window_recursive", return_value=22222),
+        patch("kakao_mcp.controller.activate_window", return_value=activate_error),
+        patch("kakao_mcp.controller._edit_text", side_effect=edit_texts),
+        patch("kakao_mcp.controller._send_ctrl_key_combo"),
+        patch("kakao_mcp.controller._user32", **{"GetForegroundWindow.return_value": foreground}),
+        patch("kakao_mcp.controller.win32clipboard"),
+        patch("kakao_mcp.controller.win32gui", **{"GetWindowRect.return_value": (0, 0, 100, 100)}),
+        patch("kakao_mcp.controller.time.sleep"),
+    ]
+
+
+def _run_send(patches):
+    import contextlib
+    with contextlib.ExitStack() as stack:
+        mocks = [stack.enter_context(p) for p in patches]
+        result = controller.send_message_to_room("TestRoom", "Hello")
+        return result, mocks
+
+
+def test_send_message_success():
+    # placeholder -> pasted -> back to placeholder after Enter
+    result, mocks = _run_send(_send_patches([PLACEHOLDER, "Hello", PLACEHOLDER]))
     assert result["success"] is True
     assert "sent" in result["message"].lower()
+    mocks[4].assert_called_once_with(0x56)  # Ctrl+V
+
+
+def test_send_message_refuses_without_foreground():
+    result, mocks = _run_send(_send_patches([PLACEHOLDER], activate_error="no fg"))
+    assert result == {"success": False, "error": "no fg"}
+    mocks[4].assert_not_called()  # no keystrokes when the window isn't focused
+
+
+def test_send_message_paste_not_landed():
+    result, mocks = _run_send(_send_patches([PLACEHOLDER, PLACEHOLDER]))
+    assert result["success"] is False and "Paste did not reach" in result["error"]
+    mocks[5].keybd_event.assert_not_called()  # Enter is never pressed
+
+
+def test_send_message_not_cleared_after_enter():
+    result, _ = _run_send(_send_patches([PLACEHOLDER, "Hello"] + ["Hello"] * 10))
+    assert result["success"] is False and "not sent" in result["error"]
 
 
 @patch("kakao_mcp.controller.find_chat_window")
@@ -134,13 +174,17 @@ def test_send_message_no_edit_control(mock_find, mock_child):
 # read_chat_messages
 # ---------------------------------------------------------------------------
 
+@patch("kakao_mcp.controller.time.sleep")
+@patch("kakao_mcp.controller._empty_clipboard")
+@patch("kakao_mcp.controller.activate_window", return_value=None)
 @patch("kakao_mcp.controller._read_clipboard_text")
 @patch("kakao_mcp.controller._send_ctrl_key_combo")
 @patch("kakao_mcp.controller._user32")
 @patch("kakao_mcp.controller.win32gui")
 @patch("kakao_mcp.controller.find_child_window_recursive")
 @patch("kakao_mcp.controller.find_chat_window")
-def test_read_messages_success(mock_find, mock_child, mock_gui, mock_user32, mock_ctrl, mock_clip):
+def test_read_messages_success(mock_find, mock_child, mock_gui, mock_user32, mock_ctrl, mock_clip,
+                               mock_activate, mock_empty, mock_sleep):
     mock_find.return_value = 11111
     mock_child.return_value = 33333
     mock_gui.GetWindowRect.return_value = (0, 0, 100, 100)
@@ -148,6 +192,43 @@ def test_read_messages_success(mock_find, mock_child, mock_gui, mock_user32, moc
     result = controller.read_chat_messages("Room")
     assert result["success"] is True
     assert "Hello" in result["raw_text"]
+    mock_empty.assert_called_once()  # stale clipboard cleared before copying
+
+
+@patch("kakao_mcp.controller.time.sleep")
+@patch("kakao_mcp.controller._empty_clipboard")
+@patch("kakao_mcp.controller.activate_window", return_value=None)
+@patch("kakao_mcp.controller._read_clipboard_text", return_value="")
+@patch("kakao_mcp.controller._send_ctrl_key_combo")
+@patch("kakao_mcp.controller._user32")
+@patch("kakao_mcp.controller.win32gui")
+@patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
+@patch("kakao_mcp.controller.find_chat_window", return_value=11111)
+def test_read_messages_empty_clipboard_is_error(*mocks):
+    mocks[2].GetWindowRect.return_value = (0, 0, 100, 100)
+    result = controller.read_chat_messages("Room")
+    assert result["success"] is False and "Nothing was copied" in result["error"]
+
+
+@patch("kakao_mcp.controller._send_ctrl_key_combo")
+@patch("kakao_mcp.controller.activate_window", return_value="no fg")
+@patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
+@patch("kakao_mcp.controller.find_chat_window", return_value=11111)
+def test_read_messages_refuses_without_foreground(mock_find, mock_child, mock_activate, mock_ctrl):
+    result = controller.read_chat_messages("Room")
+    assert result == {"success": False, "error": "no fg", "raw_text": ""}
+    mock_ctrl.assert_not_called()
+
+
+@patch("kakao_mcp.controller.time.sleep")
+@patch("kakao_mcp.controller._log")
+@patch("kakao_mcp.controller.bring_window_to_front")
+@patch("kakao_mcp.controller._user32")
+def test_activate_window_reports_failure(mock_user32, mock_front, mock_log, mock_sleep):
+    mock_user32.GetForegroundWindow.return_value = 999
+    assert "foreground" in controller.activate_window(11111, "Room")
+    mock_user32.GetForegroundWindow.return_value = 11111
+    assert controller.activate_window(11111, "Room") is None
 
 
 @patch("kakao_mcp.controller.find_chat_window")
