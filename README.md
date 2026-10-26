@@ -167,6 +167,29 @@ powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
 
 로그는 `%LOCALAPPDATA%\kakaotalk-mcp\server.log`, 해제는 `-Uninstall`.
 
+### 공개 접속 (Claude 커스텀 커넥터, OAuth 2.1)
+
+리버스 프록시(예: Nginx Proxy Manager)로 HTTPS 도메인에 연결하고 OAuth를 켜면 claude.ai 커스텀 커넥터로 연결할 수 있습니다. 설계는 [docs/remote-auth.md](docs/remote-auth.md)를 참고하세요.
+
+```bash
+kakaotalk-mcp auth init --public-url https://kakao-mcp.example.com --trusted-proxy <NPM IP> --extra-host "192.168.1.20:*"
+```
+
+비밀번호를 정하고, 출력되는 TOTP 시크릿을 인증 앱(Google Authenticator 등)에 등록합니다. `%LOCALAPPDATA%\kakaotalk-mcp\auth.toml`이 생기면 HTTP 모드에서 인증이 자동으로 켜집니다(서버 재시작 필요).
+
+- claude.ai: 설정 → 커넥터 → 커스텀 커넥터 추가 → `https://kakao-mcp.example.com/mcp` → 로그인/동의 화면에서 비밀번호, 인증 코드, 허용할 권한 선택
+- Claude Code (토큰 방식):
+
+```bash
+kakaotalk-mcp token create --name main-pc --scopes kakao.read,kakao.send
+```
+
+```bash
+claude mcp add --transport http kakao https://kakao-mcp.example.com/mcp --header "Authorization: Bearer <토큰>"
+```
+
+권한(스코프): `kakao.read`(읽기), `kakao.send`(보내기), `kakao.manage`(오픈채팅 참여/만들기/나가기). 긴급 차단은 `kakaotalk-mcp token revoke --all`. 도구 호출은 `%LOCALAPPDATA%\kakaotalk-mcp\audit.log`에 기록됩니다.
+
 ## 사용 예시
 
 Claude에게 자연어로 요청하면 됩니다:

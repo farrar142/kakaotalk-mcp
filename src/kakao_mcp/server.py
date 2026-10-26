@@ -9,6 +9,7 @@ from kakao_mcp import controller
 from kakao_mcp import parser
 from kakao_mcp import config
 from kakao_mcp import openchat
+from kakao_mcp.auth.scopes import MANAGE, READ, SEND, guard
 
 app = FastMCP(
     "kakao-mcp-server",
@@ -17,6 +18,7 @@ app = FastMCP(
 
 
 @app.tool()
+@guard(READ)
 def kakao_health_check() -> Dict:
     """Check if KakaoTalk PC is currently running.
     Returns status, window handle, and process ID."""
@@ -35,6 +37,7 @@ def kakao_health_check() -> Dict:
 
 
 @app.tool()
+@guard(READ)
 def kakao_list_open_rooms() -> Dict:
     """List all currently open KakaoTalk chat room windows.
     Returns a list of open chat rooms with their window titles."""
@@ -52,6 +55,7 @@ def kakao_list_open_rooms() -> Dict:
 
 
 @app.tool()
+@guard(SEND)
 def kakao_open_room(room_name: str) -> Dict:
     """Open or bring to front a KakaoTalk chat room by name.
     If the chat window is already open, brings it to foreground.
@@ -74,6 +78,7 @@ def kakao_open_room(room_name: str) -> Dict:
 
 
 @app.tool()
+@guard(SEND)
 def kakao_send_message(room_name: str, message: str) -> Dict:
     """Send a text message to a KakaoTalk chat room.
     The chat room window must already be open.
@@ -94,6 +99,7 @@ def kakao_send_message(room_name: str, message: str) -> Dict:
 
 
 @app.tool()
+@guard(SEND)
 def kakao_send_bulk(room_names: list[str], message: str, interval_sec: float = 0.5) -> Dict:
     """Send the same message to multiple KakaoTalk chat rooms at once.
     Opens each room if not already open and sends the message sequentially.
@@ -118,6 +124,7 @@ def kakao_send_bulk(room_names: list[str], message: str, interval_sec: float = 0
 
 
 @app.tool()
+@guard(SEND)
 def kakao_send_image(room_name: str, image_paths: list[str]) -> Dict:
     """Send image file(s) to a KakaoTalk chat room.
     Copies the image to clipboard using file-drop format and pastes into the chat.
@@ -152,6 +159,7 @@ def kakao_send_image(room_name: str, image_paths: list[str]) -> Dict:
 
 
 @app.tool()
+@guard(READ)
 def kakao_read_messages(room_name: str, max_messages: int = 50) -> Dict:
     """Read recent messages from a KakaoTalk chat room.
     Uses clipboard-based reading (Ctrl+A, Ctrl+C on the chat list).
@@ -180,6 +188,7 @@ def kakao_read_messages(room_name: str, max_messages: int = 50) -> Dict:
 
 
 @app.tool()
+@guard(READ)
 def kakao_extract_links(room_name: str) -> Dict:
     """Extract all URLs/links from messages in a KakaoTalk chat room.
     Reads the chat first, then extracts URLs from all messages.
@@ -202,6 +211,7 @@ def kakao_extract_links(room_name: str) -> Dict:
 
 
 @app.tool()
+@guard(SEND)
 def kakao_send_mention(room_name: str, mention_name: str, message: str) -> Dict:
     """Send a message with @mention to a KakaoTalk chat room.
     Types '@' to activate the mention popup, selects the target user,
@@ -227,6 +237,7 @@ def kakao_send_mention(room_name: str, mention_name: str, message: str) -> Dict:
 
 
 @app.tool()
+@guard(READ)
 def kakao_download_images(
     room_name: str,
     output_dir: Optional[str] = None,
@@ -252,6 +263,7 @@ def kakao_download_images(
 
 
 @app.tool()
+@guard(SEND)
 def kakao_start_monitor(
     room_name: str,
     keywords: list[str],
@@ -279,6 +291,7 @@ def kakao_start_monitor(
 
 
 @app.tool()
+@guard(SEND)
 def kakao_stop_monitor() -> Dict:
     """Stop the running chat room monitor."""
     try:
@@ -291,6 +304,7 @@ def kakao_stop_monitor() -> Dict:
 
 
 @app.tool()
+@guard(READ)
 def kakao_get_monitor_events() -> Dict:
     """Get pending keyword match events from the chat monitor.
     Returns events detected since last call. Each event includes:
@@ -333,6 +347,7 @@ def _openchat_call(fn, *args, **kwargs) -> Dict:
 
 
 @app.tool()
+@guard(READ)
 def kakao_openchat_search(query: str, max_results: int = 10) -> Dict:
     """Search KakaoTalk open chat rooms (group chats) by name/description/tag.
     Results are read from the screen with OCR, so titles may contain small
@@ -347,6 +362,7 @@ def kakao_openchat_search(query: str, max_results: int = 10) -> Dict:
 
 
 @app.tool()
+@guard(MANAGE)
 def kakao_openchat_join(
     query: str,
     title: Optional[str] = None,
@@ -371,6 +387,7 @@ def kakao_openchat_join(
 
 
 @app.tool()
+@guard(MANAGE)
 def kakao_openchat_create(
     name: str,
     description: str = "",
@@ -396,6 +413,7 @@ def kakao_openchat_create(
 
 
 @app.tool()
+@guard(MANAGE)
 def kakao_leave_room(room_name: str, confirm: bool = False) -> Dict:
     """Leave a chat room (open chat or regular). This cannot be undone:
     the conversation history is deleted. The room window must be open.
@@ -410,6 +428,7 @@ def kakao_leave_room(room_name: str, confirm: bool = False) -> Dict:
 
 
 @app.tool()
+@guard(READ)
 def kakao_get_room_link(room_name: str) -> Dict:
     """Get the share URL of an open chat room (via the room menu's 'URL 복사').
     The room window must be open.
@@ -429,20 +448,57 @@ def main():
     interactive desktop) and connect to ``http://<vm-ip>:8765/mcp``.
     """
     import argparse
+    import sys
 
-    ap = argparse.ArgumentParser(prog="kakaotalk-mcp")
+    if len(sys.argv) > 1 and sys.argv[1] in ("auth", "token"):
+        from kakao_mcp.auth.cli import main as cli_main
+        cli_main(sys.argv[1:])
+        return
+
+    from kakao_mcp.auth import enable_auth, load_config
+    from kakao_mcp.auth.config import CONFIG_PATH
+
+    ap = argparse.ArgumentParser(
+        prog="kakaotalk-mcp",
+        epilog="Management: kakaotalk-mcp auth init|set-password|set-totp|set-public-url, "
+               "kakaotalk-mcp token create|list|revoke",
+    )
     ap.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
     ap.add_argument("--host", default=os.environ.get("KAKAO_MCP_HOST", "127.0.0.1"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("KAKAO_MCP_PORT", "8765")))
+    ap.add_argument("--auth-config", default=str(CONFIG_PATH),
+                    help="auth.toml; when it exists, HTTP transports require OAuth/PAT tokens")
     args = ap.parse_args()
 
     app.settings.host = args.host
     app.settings.port = args.port
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        # The default DNS-rebinding guard only accepts localhost Host headers,
-        # which rejects remote clients. Restrict access with the firewall instead.
-        app.settings.transport_security = None
-    app.run(transport=args.transport)
+    auth_cfg = load_config(args.auth_config) if args.transport != "stdio" else None
+
+    if auth_cfg is None:
+        if args.transport != "stdio" and args.host not in ("127.0.0.1", "localhost", "::1"):
+            # The default DNS-rebinding guard only accepts localhost Host headers,
+            # which rejects remote clients. Restrict access with the firewall instead.
+            app.settings.transport_security = None
+            print(f"WARNING: serving without authentication on {args.host}:{args.port}", file=sys.stderr)
+        app.run(transport=args.transport)
+        return
+
+    if args.transport != "streamable-http":
+        sys.exit("OAuth is only supported with --transport streamable-http")
+    enable_auth(app, auth_cfg)
+
+    import uvicorn
+
+    # Run uvicorn directly so client IPs from the reverse proxy are trusted
+    # (login throttling and logs use them).
+    uvicorn.run(
+        app.streamable_http_app(),
+        host=args.host,
+        port=args.port,
+        proxy_headers=True,
+        forwarded_allow_ips=",".join(auth_cfg.trusted_proxies) or "127.0.0.1",
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":
