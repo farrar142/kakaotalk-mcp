@@ -1,0 +1,689 @@
+"""Open chat (오픈채팅) automation for KakaoTalk PC.
+
+Flows were mapped against KakaoTalk PC 26.9 (Windows, 100% display scale):
+
+- Main window (chat tab) header has an open-chat icon that opens the
+  "오픈채팅" window. That window has a real Win32 ``Edit`` search box; the
+  home list, the search header and the result list are owner-drawn
+  ``EVA_Window_Dblclk`` children, read with OCR.
+- Double-clicking a search result opens a preview window whose bottom button
+  is "오픈채팅 참여하기" (or "채팅방 들어가기" when already joined). Joining
+  shows a "프로필 설정" dialog (KakaoTalk profile vs. random nickname).
+- A chat room window's ≡ menu is an ``EVA_Menu`` popup with "채팅방 URL 복사",
+  "채팅방 나가기", ...; leaving asks for confirmation ("나가기" / "취소").
+- "+ 만들기" opens "오픈채팅 만들기" with a name ``Edit``, a description
+  ``RICHEDIT50W``, topic chips and participation options.
+
+All coordinates below are window-relative pixels. Every click first brings the
+target window to the foreground and aborts if that fails, so a stray click
+never lands in another application.
+"""
+import ctypes
+import re
+import time
+from typing import Callable, Dict, List, Optional, Set
+
+import win32api
+import win32clipboard
+import win32gui
+import win32process
+
+from . import config, controller, ocr
+
+_user32 = ctypes.windll.user32
+
+EM_SETSEL = 0x00B1
+WM_CLEAR = 0x0303
+WM_CHAR = 0x0102
+VK_RETURN = 0x0D
+VK_ESCAPE = 0x1B
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_WHEEL = 0x0800
+
+SEPARATOR_RGB = (237, 237, 237)
+
+
+class UIError(Exception):
+    """A KakaoTalk UI step failed (window missing, unexpected dialog, ...)."""
+
+
+# ---------------------------------------------------------------------------
+# Low-level helpers
+# ---------------------------------------------------------------------------
+
+def _main_hwnd() -> int:
+    hwnd = win32gui.FindWindow(config.KAKAO_MAIN_WINDOW_CLASS, config.KAKAO_MAIN_WINDOW_TITLE)
+    if not hwnd:
+        raise UIError("KakaoTalk main window not found (is KakaoTalk running and logged in?)")
+    return hwnd
+
+
+def _kakao_windows() -> Set[int]:
+    """Visible top-level windows that belong to the KakaoTalk process."""
+    _, pid = win32process.GetWindowThreadProcessId(_main_hwnd())
+    found: Set[int] = set()
+
+    def _cb(hwnd, _):
+        if win32gui.IsWindowVisible(hwnd):
+            if win32process.GetWindowThreadProcessId(hwnd)[1] == pid:
+                found.add(hwnd)
+        return True
+
+    win32gui.EnumWindows(_cb, None)
+    return found
+
+
+def _size(hwnd: int):
+    r = win32gui.GetWindowRect(hwnd)
+    return r[2] - r[0], r[3] - r[1]
+
+
+def _children(hwnd: int, direct: bool = True) -> List[int]:
+    out: List[int] = []
+
+    def _cb(child, _):
+        if not direct or win32gui.GetParent(child) == hwnd:
+            out.append(child)
+        return True
+
+    try:
+        win32gui.EnumChildWindows(hwnd, _cb, None)
+    except Exception:
+        pass
+    return out
+
+
+def _wait_for(pred: Callable[[], Optional[int]], timeout: float = 5.0, interval: float = 0.15) -> Optional[int]:
+    end = time.time() + timeout
+    while time.time() < end:
+        found = pred()
+        if found:
+            return found
+        time.sleep(interval)
+    return None
+
+
+def _wait_new_window(before: Set[int], pred: Callable[[int], bool] = lambda h: True,
+                     timeout: float = 5.0) -> Optional[int]:
+    def _check():
+        for h in _kakao_windows() - before:
+            if pred(h):
+                return h
+        return None
+    return _wait_for(_check, timeout)
+
+
+def _focus(hwnd: int):
+    controller.bring_window_to_front(hwnd)
+    time.sleep(config.WINDOW_ACTIVATE_WAIT_SEC)
+    if _user32.GetForegroundWindow() != hwnd:
+        controller.bring_window_to_front(hwnd)
+        time.sleep(0.3)
+        if _user32.GetForegroundWindow() != hwnd:
+            raise UIError(f"Could not bring window {hwnd:#x} to the foreground")
+
+
+def _click(hwnd: int, x: float, y: float, double: bool = False, focus: bool = True):
+    """Click at window-relative (x, y) after making ``hwnd`` the foreground window."""
+    if focus:
+        _focus(hwnd)
+    left, top, _, _ = win32gui.GetWindowRect(hwnd)
+    _user32.SetCursorPos(int(left + x), int(top + y))
+    _user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    _user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    if double:
+        time.sleep(0.05)
+        _user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        _user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.4)
+
+
+def _wheel(hwnd: int, x: float, y: float, notches: int):
+    """Scroll with the mouse wheel over a window-relative point (positive = down)."""
+    _focus(hwnd)
+    left, top, _, _ = win32gui.GetWindowRect(hwnd)
+    _user32.SetCursorPos(int(left + x), int(top + y))
+    for _ in range(abs(notches)):
+        _user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -120 if notches > 0 else 120, 0)
+        time.sleep(0.05)
+    time.sleep(0.5)
+
+
+def _press(vk: int):
+    _user32.keybd_event(vk, 0, 0, 0)
+    _user32.keybd_event(vk, 0, config.KEYEVENTF_KEYUP, 0)
+    time.sleep(0.1)
+
+
+def _set_text(edit_hwnd: int, text: str):
+    """Replace an Edit/RichEdit's text by typing WM_CHAR (works with Korean, no IME needed)."""
+    win32api.SendMessage(edit_hwnd, EM_SETSEL, 0, -1)
+    win32api.SendMessage(edit_hwnd, WM_CLEAR, 0, 0)
+    for ch in text:
+        win32api.SendMessage(edit_hwnd, WM_CHAR, ord("\r") if ch == "\n" else ord(ch), 0)
+        time.sleep(config.SEARCH_CHAR_INTERVAL_SEC)
+
+
+def _read_clipboard() -> str:
+    for _ in range(config.CLIPBOARD_MAX_RETRIES):
+        try:
+            win32clipboard.OpenClipboard()
+            try:
+                if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+                    return win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT) or ""
+                return ""
+            finally:
+                win32clipboard.CloseClipboard()
+        except Exception:
+            time.sleep(config.CLIPBOARD_RETRY_INTERVAL_SEC)
+    return ""
+
+
+def _clear_clipboard():
+    try:
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+        finally:
+            win32clipboard.CloseClipboard()
+    except Exception:
+        pass
+
+
+def _ocr_window(hwnd: int, focus: bool = True) -> List[Dict]:
+    if focus:
+        _focus(hwnd)
+    return ocr.recognize(ocr.grab_window(hwnd))
+
+
+def _ocr_text(hwnd: int) -> str:
+    try:
+        return " / ".join(ln["text"] for ln in _ocr_window(hwnd))
+    except Exception as e:  # diagnostics only
+        return f"<ocr failed: {e}>"
+
+
+# ---------------------------------------------------------------------------
+# Open chat window
+# ---------------------------------------------------------------------------
+
+def _is_openchat_window(hwnd: int) -> bool:
+    """Untitled EVA window with a direct ``Edit`` search box (the 오픈채팅 window)."""
+    if win32gui.GetClassName(hwnd) != config.KAKAO_CHAT_WINDOW_CLASS or win32gui.GetWindowText(hwnd):
+        return False
+    w, h = _size(hwnd)
+    if h < 400:
+        return False
+    return any(
+        win32gui.GetClassName(c) == "Edit" and win32gui.IsWindowVisible(c) and _size(c)[0] > 100
+        for c in _children(hwnd)
+    )
+
+
+def _find_openchat_window() -> Optional[int]:
+    for h in _kakao_windows():
+        if _is_openchat_window(h):
+            return h
+    return None
+
+
+def open_openchat_window() -> int:
+    """Open (or focus) the 오픈채팅 window and return its hwnd."""
+    hwnd = _find_openchat_window()
+    if hwnd:
+        _focus(hwnd)
+        return hwnd
+
+    main = _main_hwnd()
+    before = _kakao_windows()
+    _click(main, *config.MAIN_CHAT_TAB_POS)  # chat tab — the open-chat icon lives in its header
+    w, _ = _size(main)
+    _click(main, w - config.MAIN_OPENCHAT_ICON_OFFSET[0], config.MAIN_OPENCHAT_ICON_OFFSET[1])
+    hwnd = _wait_new_window(before, _is_openchat_window, timeout=5)
+    if not hwnd:
+        raise UIError("Open chat window did not appear")
+    time.sleep(0.5)
+    return hwnd
+
+
+def _search_edit(oc_hwnd: int) -> int:
+    for c in _children(oc_hwnd):
+        if win32gui.GetClassName(c) == "Edit" and win32gui.IsWindowVisible(c):
+            return c
+    raise UIError("Open chat search box not found")
+
+
+def _result_list(oc_hwnd: int) -> Optional[int]:
+    """The visible result list in search view (it starts well below the search box)."""
+    edit_bottom = win32gui.GetWindowRect(_search_edit(oc_hwnd))[3]
+    best = None
+    for c in _children(oc_hwnd):
+        if win32gui.GetClassName(c) != config.KAKAO_CHAT_WINDOW_CLASS or not win32gui.IsWindowVisible(c):
+            continue
+        r = win32gui.GetWindowRect(c)
+        if r[1] - edit_bottom > 60 and r[3] - r[1] > 150:
+            best = c
+    return best
+
+
+def _go_home(oc_hwnd: int):
+    """Return the open chat window to its home view (back arrow in search view)."""
+    if _result_list(oc_hwnd):
+        _click(oc_hwnd, *config.OPENCHAT_BACK_POS)
+        time.sleep(0.5)
+
+
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+def _split_items(img) -> List[tuple]:
+    """Split a result-list screenshot into item row spans using the 1px separators."""
+    w, h = img.size
+    rgb = img.convert("RGB")
+    xs = range(25, max(26, w - 40), 5)
+    seps = [y for y in range(h)
+            if rgb.getpixel((25, y)) == SEPARATOR_RGB
+            and all(rgb.getpixel((x, y)) == SEPARATOR_RGB for x in xs)]
+    # If the list ends before the viewport does, trim the blank tail so the last
+    # row counts as complete (its bottom is above the viewport edge).
+    end = h
+    while end > 0 and all(rgb.getpixel((x, end - 1)) == (255, 255, 255) for x in xs):
+        end -= 1
+    if h - end > 10:
+        end = min(h - 1, end + 5)
+    else:
+        end = h
+    bounds = [0] + [y for y in seps if y < end] + [end]
+    return [(a, b) for a, b in zip(bounds, bounds[1:]) if b - a > 40]
+
+
+def _parse_item(img, top: int, bottom: int) -> Optional[Dict]:
+    """OCR one result row: title (dark text), description, member count/activity."""
+    w, _ = img.size
+    crop = img.crop((0, top, w - config.OPENCHAT_THUMB_WIDTH, bottom))
+    lines = ocr.recognize(crop, scale=config.OPENCHAT_OCR_SCALE)
+    if not lines:
+        return None
+    title_lines, rest = [], []
+    for ln in lines:
+        dark = ocr.line_darkness(crop, ln) < config.OPENCHAT_TITLE_MAX_LUMA
+        if dark and not rest and not ln["text"].lstrip().startswith("#"):
+            title_lines.append(ln)
+        else:
+            rest.append(ln)
+    if not title_lines:
+        title_lines, rest = lines[:1], lines[1:]
+    meta = rest[-1]["text"] if len(rest) >= 2 else ""
+    desc = " ".join(ln["text"] for ln in (rest[:-1] if meta else rest))
+    title = " ".join(ln["text"] for ln in title_lines).strip()
+    # Room icons (lock, badges) in front of the title OCR as a stray glyph
+    title = re.sub(r"^(?:[0十+*·•]|[^\w\s<\[(〈])\s+", "", title)
+    members = re.search(r"(\d[\d,]*)\s*\S?\s*(?:\||방금|\d+\s*(?:분|시간|일)|$)", meta)
+    return {
+        "title": title,
+        "description": desc.strip(),
+        "meta": meta.strip(),
+        "members": int(members.group(1).replace(",", "")) if members else None,
+        "y_center": (top + bottom) / 2,
+        "complete": bottom < img.size[1],
+        "top": top,
+    }
+
+
+def _visible_results(oc_hwnd: int, at_top: bool = False) -> List[Dict]:
+    """Parse the rows currently visible in the result list.
+
+    A row is ``complete`` when both its separators are visible; when the list
+    is scrolled to the top (``at_top``) the first row has no separator above.
+    """
+    lst = _result_list(oc_hwnd)
+    if not lst:
+        return []
+    _focus(oc_hwnd)
+    img = ocr.grab_window(lst)
+    items = []
+    for top, bottom in _split_items(img):
+        item = _parse_item(img, top, bottom)
+        if item and item["title"]:
+            item["complete"] = item["complete"] and (item["top"] > 0 or at_top)
+            item["list_hwnd"] = lst
+            items.append(item)
+    return items
+
+
+def _run_search(query: str) -> int:
+    oc = open_openchat_window()
+    edit = _search_edit(oc)
+    _set_text(edit, query)
+    r = win32gui.GetWindowRect(edit)
+    o = win32gui.GetWindowRect(oc)
+    _click(oc, (r[0] + r[2]) / 2 - o[0], (r[1] + r[3]) / 2 - o[1])  # focus the box
+    _press(VK_RETURN)
+    if not _wait_for(lambda: _result_list(oc), timeout=5):
+        raise UIError(f"No search results view for '{query}'")
+    time.sleep(config.OPENCHAT_RESULTS_WAIT_SEC)
+    return oc
+
+
+def search_openchat(query: str, max_results: int = 10, max_pages: int = 3) -> Dict:
+    """Search open chat rooms (group chats) and return parsed results."""
+    oc = _run_search(query)
+    results: List[Dict] = []
+    seen: Set[str] = set()
+    for page in range(max_pages):
+        new = 0
+        for item in _visible_results(oc, at_top=page == 0):
+            key = ocr.normalize(item["title"])
+            if key in seen or not item["complete"]:
+                continue
+            seen.add(key)
+            new += 1
+            results.append({k: item[k] for k in ("title", "description", "members", "meta")})
+        if len(results) >= max_results or new == 0 or page == max_pages - 1:
+            break
+        lst = _result_list(oc)
+        w, h = _size(lst)
+        _wheel(lst, w / 2, h / 2, config.OPENCHAT_SCROLL_NOTCHES)
+    results = results[:max_results]
+    for i, r in enumerate(results):
+        r["index"] = i
+    return {"success": True, "query": query, "count": len(results), "results": results}
+
+
+def _locate_result(oc: int, title: Optional[str], index: int, max_pages: int = 5) -> Dict:
+    """Scroll through results until the wanted item is fully visible; return it."""
+    seen: List[str] = []
+    for page in range(max_pages):
+        for item in _visible_results(oc, at_top=page == 0):
+            if not item["complete"]:
+                continue
+            key = ocr.normalize(item["title"])
+            if key not in seen:
+                seen.append(key)
+            pos = seen.index(key)
+            matched = (ocr.similarity(item["title"], title) >= 0.75) if title else pos == index
+            if matched and item["complete"]:
+                return item
+        lst = _result_list(oc)
+        w, h = _size(lst)
+        _wheel(lst, w / 2, h / 2, config.OPENCHAT_SCROLL_NOTCHES)
+    raise UIError(f"Result not found: {title!r}" if title else f"Result index {index} not found")
+
+
+# ---------------------------------------------------------------------------
+# Join
+# ---------------------------------------------------------------------------
+
+def _is_preview_window(hwnd: int) -> bool:
+    if win32gui.GetClassName(hwnd) != config.KAKAO_CHAT_WINDOW_CLASS or win32gui.GetWindowText(hwnd):
+        return False
+    w, h = _size(hwnd)
+    return 250 < w < 400 and h > 500 and not _is_openchat_window(hwnd)
+
+
+def _find_titled_window(title: str, exclude: Set[int]) -> Optional[int]:
+    for h in _kakao_windows() - exclude:
+        t = win32gui.GetWindowText(h)
+        if t and t != config.KAKAO_MAIN_WINDOW_TITLE and ocr.similarity(t, title) >= 0.75:
+            return h
+    return None
+
+
+def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
+                  profile: str = "kakao", passcode: Optional[str] = None) -> Dict:
+    """Search, open the preview of a result, and join it.
+
+    Args:
+        query: Search text.
+        title: Room title to pick (fuzzy). If omitted, ``index`` is used.
+        index: 0-based result index when ``title`` is not given.
+        profile: "kakao" (KakaoTalk profile) or "random" (random nickname).
+        passcode: Participation code for code-protected rooms.
+    """
+    if profile not in ("kakao", "random"):
+        return {"success": False, "error": "profile must be 'kakao' or 'random'"}
+
+    oc = _run_search(query)
+    item = _locate_result(oc, title, index)
+    room_title = item["title"]
+    lst = item["list_hwnd"]
+
+    before = _kakao_windows()
+    _focus(oc)
+    _click(lst, config.OPENCHAT_ITEM_CLICK_X, item["y_center"], double=True, focus=False)
+    preview = _wait_new_window(before, _is_preview_window, timeout=5)
+    if not preview:
+        room = _find_titled_window(room_title, set())
+        if room:  # already a member: KakaoTalk may open the room directly
+            return _joined(room, already=True)
+        raise UIError(f"Preview window did not open for '{room_title}'")
+    time.sleep(0.6)
+
+    pw, ph = _size(preview)
+    btn_y = ph - config.OPENCHAT_PREVIEW_BUTTON_FROM_BOTTOM
+
+    before = _kakao_windows()
+    _click(preview, pw / 2, btn_y)
+
+    handled: Set[int] = set()
+    passcode_sent = False
+    end = time.time() + 10
+    while time.time() < end:
+        time.sleep(0.3)
+        preview_open = win32gui.IsWindow(preview) and win32gui.IsWindowVisible(preview)
+        new = [h for h in _kakao_windows() - before - handled if h != preview]
+        for dialog in new:
+            dtitle = win32gui.GetWindowText(dialog)
+            if dtitle == "프로필 설정":
+                time.sleep(0.4)
+                _confirm_profile(dialog, profile)
+                handled.add(dialog)
+            elif dtitle:
+                continue  # a titled window: possibly the room, checked below
+            else:
+                time.sleep(0.4)
+                text = _ocr_text(dialog)
+                if "코드" in text and passcode and not passcode_sent:
+                    edits = [c for c in _children(dialog, direct=False)
+                             if win32gui.GetClassName(c) == "Edit"]
+                    if not edits:
+                        raise UIError(f"Passcode dialog without an input box: {text}")
+                    _set_text(edits[0], passcode)
+                    _focus(dialog)
+                    _press(VK_RETURN)
+                    passcode_sent = True
+                    handled.add(dialog)
+                else:
+                    raise UIError(f"Unexpected dialog while joining: {text}")
+        room = _find_titled_window(room_title, {preview})
+        if room and not preview_open and _user32.GetForegroundWindow() == room:
+            # Members go straight in; joining always passes through 프로필 설정
+            return _joined(room, already=not handled)
+    if win32gui.IsWindow(preview) and win32gui.IsWindowVisible(preview):
+        detail = _ocr_text(preview)
+        win32gui.PostMessage(preview, 0x0010, 0, 0)  # WM_CLOSE
+        raise UIError(f"Join did not complete; preview still open: {detail}")
+    raise UIError(f"Room window for '{room_title}' did not open")
+
+
+def _joined(room: int, already: bool) -> Dict:
+    actual = win32gui.GetWindowText(room)
+    return {
+        "success": True,
+        "already_joined": already,
+        "room_name": actual,
+        "message": f"{'Opened' if already else 'Joined'} open chat '{actual}'",
+    }
+
+
+def _confirm_profile(dialog: int, profile: str):
+    w, h = _size(dialog)
+    if profile == "random":
+        _click(dialog, *config.PROFILE_RANDOM_RADIO_POS)
+    _click(dialog, w / 2 - config.PROFILE_CONFIRM_FROM_CENTER, h - config.DIALOG_BUTTON_FROM_BOTTOM)
+
+
+# ---------------------------------------------------------------------------
+# Room menu: leave / link
+# ---------------------------------------------------------------------------
+
+def _open_room_menu(room_name: str) -> int:
+    room = controller.find_chat_window(room_name)
+    if room is None:
+        raise UIError(f"Chat window '{room_name}' not found (open it first)")
+    w, _ = _size(room)
+    before = _kakao_windows()
+    _click(room, w - config.ROOM_MENU_ICON_OFFSET[0], config.ROOM_MENU_ICON_OFFSET[1])
+    menu = _wait_new_window(before, lambda h: win32gui.GetClassName(h) == "EVA_Menu", timeout=3)
+    if not menu:
+        raise UIError("Chat room menu did not open")
+    time.sleep(0.3)
+    return menu
+
+
+def _click_menu_item(menu: int, label: str, exclude: Optional[List[str]] = None):
+    lines = ocr.recognize(ocr.grab_window(menu))
+    line = ocr.find_line(lines, label, threshold=0.6, exclude=exclude)
+    if not line:
+        _press(VK_ESCAPE)
+        raise UIError(f"Menu item '{label}' not found in: {[ln['text'] for ln in lines]}")
+    _click(menu, line["cx"], line["cy"], focus=False)
+
+
+def get_room_link(room_name: str) -> Dict:
+    """Copy an open chat room's URL via its menu and return it."""
+    _clear_clipboard()
+    menu = _open_room_menu(room_name)
+    _click_menu_item(menu, "채팅방 URL 복사")
+    url = ""
+    for _ in range(10):
+        url = _read_clipboard().strip()
+        if url:
+            break
+        time.sleep(0.2)
+    if not url:
+        return {"success": False, "error": "URL was not copied (is this an open chat room?)"}
+    return {"success": True, "room_name": room_name, "url": url}
+
+
+def leave_room(room_name: str) -> Dict:
+    """Leave a chat room (open chat or regular) via its menu, confirming the dialog."""
+    room = controller.find_chat_window(room_name)
+    menu = _open_room_menu(room_name)
+    before = _kakao_windows()
+    _click_menu_item(menu, "채팅방 나가기", exclude=["신고"])
+    dialog = _wait_new_window(before, lambda h: win32gui.GetClassName(h) != "EVA_Menu", timeout=4)
+    if not dialog:
+        raise UIError("Leave confirmation dialog did not appear")
+    time.sleep(0.3)
+    lines = _ocr_window(dialog)
+    w, h = _size(dialog)
+    btn = ocr.find_line([ln for ln in lines if ln["y"] > h - 60], "나가기")
+    if not btn:
+        _press(VK_ESCAPE)
+        raise UIError(f"Unexpected leave dialog: {' / '.join(ln['text'] for ln in lines)}")
+    _click(dialog, btn["cx"], btn["cy"])
+    gone = _wait_for(lambda: True if not (room and win32gui.IsWindow(room)
+                                          and win32gui.IsWindowVisible(room)) else None, timeout=5)
+    if not gone:
+        return {"success": False, "error": f"Room window '{room_name}' is still open after leaving"}
+    return {"success": True, "message": f"Left chat room '{room_name}'"}
+
+
+# ---------------------------------------------------------------------------
+# Create
+# ---------------------------------------------------------------------------
+
+TOPICS = ["자유수다", "팬덤", "게임", "엔터테인먼트", "스포츠", "일상", "운동/건강",
+          "여행", "취미", "친목/모임", "패션/뷰티", "직업", "자기계발", "재테크"]
+
+
+def _form_body(form: int) -> int:
+    for c in _children(form):
+        if win32gui.GetClassName(c) == "EVA_ChildWindow" and win32gui.IsWindowVisible(c):
+            return c
+    raise UIError("Create form body not found")
+
+
+def _find_on_form(form: int, label: str, max_scrolls: int = 4,
+                  exclude: Optional[List[str]] = None) -> Dict:
+    """OCR the form, scrolling down until ``label`` is visible; return the line."""
+    body = _form_body(form)
+    bw, bh = _size(body)
+    for _ in range(max_scrolls + 1):
+        lines = _ocr_window(form)
+        top = win32gui.GetWindowRect(body)[1] - win32gui.GetWindowRect(form)[1]
+        visible = [ln for ln in lines if top <= ln["cy"] <= top + bh]
+        line = ocr.find_line(visible, label, threshold=0.75, exclude=exclude)
+        if line:
+            return line
+        _wheel(body, bw / 2, bh / 2, 3)
+    raise UIError(f"'{label}' not found on the create form")
+
+
+def create_openchat(name: str, description: str = "", topic: str = "자유수다",
+                    searchable: bool = True, kakao_profile_only: bool = False) -> Dict:
+    """Create a group open chat room and return the new room's window title."""
+    if not name.strip() or len(name) > 30:
+        return {"success": False, "error": "name must be 1-30 characters"}
+    if len(description) > 200:
+        return {"success": False, "error": "description must be at most 200 characters"}
+    if topic not in TOPICS:
+        return {"success": False, "error": f"topic must be one of {TOPICS}"}
+
+    oc = open_openchat_window()
+    _go_home(oc)
+    _wheel(oc, 200, 300, -10)  # home view scrolled to top so '+ 만들기' is visible
+    lines = _ocr_window(oc)
+    make = ocr.find_line(lines, "만들기", threshold=0.75)
+    if not make:
+        raise UIError("'+ 만들기' button not found in the open chat window")
+    before = _kakao_windows()
+    _click(oc, make["cx"], make["cy"])
+    form = _wait_new_window(before, lambda h: win32gui.GetWindowText(h) == "오픈채팅 만들기", timeout=5)
+    if not form:
+        raise UIError("'오픈채팅 만들기' window did not open")
+    time.sleep(0.5)
+
+    try:
+        fields = _children(form, direct=False)
+        name_edit = next((c for c in fields if win32gui.GetClassName(c) == "Edit"), None)
+        desc_edit = next((c for c in fields if win32gui.GetClassName(c) == config.KAKAO_EDIT_CLASS), None)
+        if not name_edit:
+            raise UIError("Name field not found on the create form")
+        _set_text(name_edit, name)
+        if description and desc_edit:
+            _set_text(desc_edit, description)
+
+        chip = _find_on_form(form, topic)
+        _click(form, chip["cx"], chip["cy"])
+
+        if kakao_profile_only:
+            opt = _find_on_form(form, "기본프로필만 참여 허용")
+            _click(form, config.FORM_OPTION_CHECK_X, opt["cy"])
+        if not searchable:
+            opt = _find_on_form(form, "검색 허용")
+            _click(form, config.FORM_OPTION_CHECK_X, opt["cy"])
+
+        w, h = _size(form)
+        exclude = _kakao_windows()
+        _click(form, w / 2 + config.FORM_CONFIRM_FROM_CENTER, h - config.DIALOG_BUTTON_FROM_BOTTOM)
+    except Exception:
+        # Leave nothing half-filled behind
+        if win32gui.IsWindow(form):
+            w, h = _size(form)
+            try:
+                _click(form, w - config.FORM_CANCEL_FROM_RIGHT, h - config.DIALOG_BUTTON_FROM_BOTTOM)
+            except Exception:
+                pass
+        raise
+
+    room = _wait_for(lambda: _find_titled_window(name, exclude - {form}), timeout=8)
+    if not room:
+        still = win32gui.IsWindow(form) and win32gui.IsWindowVisible(form)
+        detail = _ocr_text(form) if still else "form closed"
+        return {"success": False, "error": f"Room window did not open after creating ({detail})"}
+    return {"success": True, "room_name": win32gui.GetWindowText(room),
+            "message": f"Created open chat '{win32gui.GetWindowText(room)}'"}

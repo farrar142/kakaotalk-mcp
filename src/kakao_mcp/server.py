@@ -8,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 from kakao_mcp import controller
 from kakao_mcp import parser
 from kakao_mcp import config
+from kakao_mcp import openchat
 
 app = FastMCP(
     "kakao-mcp-server",
@@ -312,8 +313,136 @@ def kakao_get_monitor_events() -> Dict:
         return {"error": f"Failed to get monitor events: {e}"}
 
 
+# ---------------------------------------------------------------------------
+# Open chat (오픈채팅)
+# ---------------------------------------------------------------------------
+
+def _openchat_call(fn, *args, **kwargs) -> Dict:
+    try:
+        if not controller.is_kakaotalk_running()["running"]:
+            return {"error": "KakaoTalk is not running"}
+        result = fn(*args, **kwargs)
+        if result.get("success"):
+            result.pop("success")
+            return result
+        return {"error": result.get("error", "Unknown error")}
+    except openchat.UIError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"{fn.__name__} failed: {e}"}
+
+
+@app.tool()
+def kakao_openchat_search(query: str, max_results: int = 10) -> Dict:
+    """Search KakaoTalk open chat rooms (group chats) by name/description/tag.
+    Results are read from the screen with OCR, so titles may contain small
+    recognition errors. Use the returned title or index with kakao_openchat_join.
+    NOTE: Opens the 오픈채팅 window and brings it to the foreground.
+
+    Args:
+        query: Search text (room name, description or #tag).
+        max_results: Maximum results to return (default 10; scrolls the list).
+    """
+    return _openchat_call(openchat.search_openchat, query, max_results=max_results)
+
+
+@app.tool()
+def kakao_openchat_join(
+    query: str,
+    title: Optional[str] = None,
+    index: int = 0,
+    profile: str = "kakao",
+    passcode: Optional[str] = None,
+) -> Dict:
+    """Join an open chat room found by search (or open it if already joined).
+    Returns the joined room's window title, usable with kakao_send_message,
+    kakao_read_messages, kakao_leave_room, etc.
+
+    Args:
+        query: Search text used to find the room.
+        title: Title of the room to join (fuzzy match). Preferred over index.
+        index: 0-based index in the search results when title is not given.
+        profile: 'kakao' to join with the KakaoTalk profile, 'random' for a random nickname.
+        passcode: Participation code (참여 코드) if the room requires one.
+    """
+    return _openchat_call(
+        openchat.join_openchat, query, title=title, index=index, profile=profile, passcode=passcode,
+    )
+
+
+@app.tool()
+def kakao_openchat_create(
+    name: str,
+    description: str = "",
+    topic: str = "자유수다",
+    searchable: bool = True,
+    kakao_profile_only: bool = False,
+) -> Dict:
+    """Create a new group open chat room. The new room's window opens afterwards.
+
+    Args:
+        name: Room name (1-30 chars).
+        description: Room description (up to 200 chars; #tags help discovery).
+        topic: One of 자유수다, 팬덤, 게임, 엔터테인먼트, 스포츠, 일상, 운동/건강,
+            여행, 취미, 친목/모임, 패션/뷰티, 직업, 자기계발, 재테크.
+        searchable: Allow the room to be found by search (default True).
+        kakao_profile_only: Only allow members using their KakaoTalk profile
+            (cannot be changed after creation).
+    """
+    return _openchat_call(
+        openchat.create_openchat, name, description=description, topic=topic,
+        searchable=searchable, kakao_profile_only=kakao_profile_only,
+    )
+
+
+@app.tool()
+def kakao_leave_room(room_name: str, confirm: bool = False) -> Dict:
+    """Leave a chat room (open chat or regular). This cannot be undone:
+    the conversation history is deleted. The room window must be open.
+
+    Args:
+        room_name: Exact title of the chat room window.
+        confirm: Must be true to actually leave (safety guard).
+    """
+    if not confirm:
+        return {"error": f"Refusing to leave '{room_name}' without confirm=true"}
+    return _openchat_call(openchat.leave_room, room_name)
+
+
+@app.tool()
+def kakao_get_room_link(room_name: str) -> Dict:
+    """Get the share URL of an open chat room (via the room menu's 'URL 복사').
+    The room window must be open.
+
+    Args:
+        room_name: Exact title of the chat room window.
+    """
+    return _openchat_call(openchat.get_room_link, room_name)
+
+
 def main():
-    app.run(transport="stdio")
+    """Run the server.
+
+    Default is stdio. To control KakaoTalk in a VM from another machine, run with
+    ``--transport streamable-http --host 0.0.0.0 --port 8765`` inside the VM's
+    logged-in desktop session (not via SSH/service — UI automation needs the
+    interactive desktop) and connect to ``http://<vm-ip>:8765/mcp``.
+    """
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="kakaotalk-mcp")
+    ap.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
+    ap.add_argument("--host", default=os.environ.get("KAKAO_MCP_HOST", "127.0.0.1"))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("KAKAO_MCP_PORT", "8765")))
+    args = ap.parse_args()
+
+    app.settings.host = args.host
+    app.settings.port = args.port
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        # The default DNS-rebinding guard only accepts localhost Host headers,
+        # which rejects remote clients. Restrict access with the firewall instead.
+        app.settings.transport_security = None
+    app.run(transport=args.transport)
 
 
 if __name__ == "__main__":

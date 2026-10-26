@@ -25,6 +25,20 @@ Claude Desktop, Claude Code 등 MCP 클라이언트에서 카카오톡 메시지
 | `kakao_send_image` | 채팅방에 이미지 파일 전송 |
 | `kakao_download_images` | 카카오톡 캐시에서 최근 이미지 다운로드 |
 
+### 오픈채팅 도구
+
+| 도구 | 설명 |
+|------|------|
+| `kakao_openchat_search` | 오픈채팅방 검색 (이름/소개/태그, OCR로 결과 읽기) |
+| `kakao_openchat_join` | 검색 결과의 오픈채팅방 참여 (카카오 프로필 / 랜덤 닉네임, 참여 코드) |
+| `kakao_openchat_create` | 그룹 오픈채팅방 만들기 (이름, 소개, 주제, 검색 허용 등) |
+| `kakao_leave_room` | 채팅방 나가기 (`confirm=true` 필요) |
+| `kakao_get_room_link` | 오픈채팅방 공유 URL 가져오기 |
+
+참여한 오픈채팅방은 일반 채팅방과 같은 창이므로 `kakao_send_message`, `kakao_read_messages` 등을 그대로 사용합니다.
+
+오픈채팅 목록·메뉴는 카카오톡이 직접 그리는 화면이라 Windows 내장 OCR(한국어)로 읽습니다. 제목에 약간의 인식 오류가 있을 수 있으며, 참여/선택은 유사도 매칭으로 처리합니다. 좌표는 카카오톡 PC 26.9, 디스플레이 배율 100% 기준입니다.
+
 ### 모니터링 도구
 
 | 도구 | 설명 |
@@ -131,6 +145,20 @@ claude mcp add kakao -- uvx kakaotalk-mcp
 }
 ```
 
+### 원격 실행 (VM 등)
+
+UI 자동화는 로그인된 데스크톱 세션에서만 동작하므로, 카카오톡이 있는 PC(VM)의 사용자 세션에서 HTTP 모드로 실행하고 다른 PC에서 접속합니다. SSH나 서비스로 실행하면 카카오톡 창에 접근할 수 없습니다.
+
+```bash
+kakaotalk-mcp --transport streamable-http --host 0.0.0.0 --port 8765
+```
+
+```bash
+claude mcp add --transport http kakao http://<VM-IP>:8765/mcp
+```
+
+`--host`가 localhost가 아니면 DNS 리바인딩 보호가 꺼지므로, 방화벽으로 접근 가능한 주소를 제한하세요.
+
 ## 사용 예시
 
 Claude에게 자연어로 요청하면 됩니다:
@@ -147,6 +175,11 @@ Claude에게 자연어로 요청하면 됩니다:
 - "홍길동, 김철수, 이영희에게 '내일 회의 참석 부탁드립니다' 보내줘"
 - "공학자들 채팅방에서 '회의', '점심' 키워드를 모니터링하고 감지되면 답장해줘"
 - "모니터링 중지해줘"
+- "'파이썬' 오픈채팅방 검색해줘"
+- "검색 결과 두 번째 방에 랜덤 닉네임으로 참여해줘"
+- "'샌드코프 테스트' 방에 '안녕하세요' 보내고 공유 링크 알려줘"
+- "'스터디 모임' 오픈채팅방 만들어줘, 주제는 자기계발"
+- "'샌드코프 테스트' 방에서 나가줘"
 
 ## 제한사항 및 주의사항
 
@@ -191,6 +224,8 @@ kakaotalk-mcp/
 │       ├── __main__.py      # python -m kakao_mcp 지원
 │       ├── server.py        # MCP 서버 + 13개 도구 정의
 │       ├── controller.py    # Win32 API 래퍼
+│       ├── openchat.py      # 오픈채팅 검색/참여/만들기/나가기
+│       ├── ocr.py           # 화면 캡처 + Windows OCR
 │       ├── parser.py        # 클립보드 텍스트 파싱
 │       └── config.py        # 상수 및 설정
 └── tests/

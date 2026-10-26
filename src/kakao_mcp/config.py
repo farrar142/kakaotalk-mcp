@@ -70,6 +70,25 @@ MENTION_SELECT_WAIT_SEC = 0.3  # Was 0.5 — after Enter to select
 MENTION_PASTE_WAIT_SEC = 0.2  # Was 0.3 — after Ctrl+V
 MENTION_SEND_WAIT_SEC = 0.3  # Was 0.5 — after final Enter
 
+# Open chat (window-relative pixels, KakaoTalk PC 26.9 at 100% display scale)
+MAIN_CHAT_TAB_POS = (32, 118)  # left sidebar chat tab
+MAIN_OPENCHAT_ICON_OFFSET = (72, 57)  # open-chat icon: (from right edge, y)
+OPENCHAT_BACK_POS = (28, 47)  # back arrow in search view
+OPENCHAT_THUMB_WIDTH = 110  # thumbnail column cropped off result rows before OCR
+OPENCHAT_TITLE_MAX_LUMA = 80  # title text is near-black, descriptions are gray
+OPENCHAT_OCR_SCALE = 3.0
+OPENCHAT_ITEM_CLICK_X = 150
+OPENCHAT_SCROLL_NOTCHES = 3
+OPENCHAT_RESULTS_WAIT_SEC = 1.0
+OPENCHAT_PREVIEW_BUTTON_FROM_BOTTOM = 41  # "오픈채팅 참여하기" button
+PROFILE_RANDOM_RADIO_POS = (268, 155)  # "프로필 설정" random-nickname radio
+PROFILE_CONFIRM_FROM_CENTER = 14  # "확인" sits left of the dialog center
+DIALOG_BUTTON_FROM_BOTTOM = 41
+ROOM_MENU_ICON_OFFSET = (22, 57)  # chat room ≡ menu: (from right edge, y)
+FORM_OPTION_CHECK_X = 32  # radio/checkbox column on the create form
+FORM_CONFIRM_FROM_CENTER = 69  # "확인" sits right of the form center
+FORM_CANCEL_FROM_RIGHT = 62
+
 # Default output directory for downloaded images
 DEFAULT_IMAGE_OUTPUT_DIR = os.path.join(
     os.environ.get("USERPROFILE", ""),
