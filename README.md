@@ -159,6 +159,14 @@ claude mcp add --transport http kakao http://<VM-IP>:8765/mcp
 
 `--host`가 localhost가 아니면 DNS 리바인딩 보호가 꺼지므로, 방화벽으로 접근 가능한 주소를 제한하세요.
 
+로그온 시 자동 실행(시작프로그램 폴더, 관리자 권한 불필요, 종료되면 5초 후 재시작):
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
+```
+
+로그는 `%LOCALAPPDATA%\kakaotalk-mcp\server.log`, 해제는 `-Uninstall`.
+
 ## 사용 예시
 
 Claude에게 자연어로 요청하면 됩니다:
