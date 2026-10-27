@@ -1,8 +1,15 @@
-# Registers run_server.ps1 to start (hidden) when this user logs on.
+# Registers the MCP server supervisor to start when this user logs on.
 # Uses the per-user Startup folder, so no admin rights are needed and the server
 # runs inside the interactive desktop session (required for UI automation).
+# The shortcut runs pythonw.exe directly: no console window is created, so the
+# logon-time console/terminal hand-off can't stall it.
 #   powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1 [-Uninstall]
-param([switch]$Uninstall)
+param(
+    [switch]$Uninstall,
+    [string]$Pythonw = "$env:USERPROFILE\.venvs\kakao-mcp\Scripts\pythonw.exe",
+    [string]$ListenHost = "0.0.0.0",
+    [int]$Port = 8765
+)
 
 $startup = [Environment]::GetFolderPath("Startup")
 $lnk = Join-Path $startup "kakaotalk-mcp.lnk"
@@ -13,12 +20,12 @@ if ($Uninstall) {
     exit 0
 }
 
-$script = Join-Path $PSScriptRoot "run_server.ps1"
+if (-not (Test-Path $Pythonw)) { throw "pythonw.exe not found: $Pythonw" }
+
 $shell = New-Object -ComObject WScript.Shell
 $sc = $shell.CreateShortcut($lnk)
-$sc.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-$sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`""
+$sc.TargetPath = $Pythonw
+$sc.Arguments = "-m kakao_mcp.supervisor --transport streamable-http --host $ListenHost --port $Port"
 $sc.WorkingDirectory = Split-Path $PSScriptRoot
-$sc.WindowStyle = 7  # minimized
 $sc.Save()
 Write-Output "Created $lnk"
