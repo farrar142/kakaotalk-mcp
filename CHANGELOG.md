@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `kakao_openchat_join`이 커뮤니티 방의 "커뮤니티 시작하기" 동의 창(메시지 공개·90일 보관)에서 멈추던 문제
+  - `accept_community=true`면 "동의", 아니면 "취소" 후 미리보기를 닫고 동의가 필요하다는 오류를 반환
+  - 미리보기 위에 뜬 그 밖의 제목 있는 창은 무시하지 않고 내용을 담아 오류로 보고
+  - 실패 정리 시 미리보기가 띄운 모달을 먼저 닫음 (모달이 있으면 미리보기 WM_CLOSE가 무시됨)
+
 ## [0.2.0] - 2026-03-22
 
 ### Added

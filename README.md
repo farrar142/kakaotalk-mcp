@@ -30,7 +30,7 @@ Claude Desktop, Claude Code 등 MCP 클라이언트에서 카카오톡 메시지
 | 도구 | 설명 |
 |------|------|
 | `kakao_openchat_search` | 오픈채팅방 검색 (이름/소개/태그, OCR로 결과 읽기) |
-| `kakao_openchat_join` | 검색 결과의 오픈채팅방 참여 (카카오 프로필 / 랜덤 닉네임 / 지정 닉네임 오픈프로필, 참여 코드) |
+| `kakao_openchat_join` | 검색 결과의 오픈채팅방 참여 (카카오 프로필 / 랜덤 닉네임 / 지정 닉네임 오픈프로필, 참여 코드). 커뮤니티 방의 "커뮤니티 시작하기" 동의는 `accept_community=true`일 때만 수락, 아니면 취소 후 중단 |
 | `kakao_openchat_create` | 그룹 오픈채팅방 만들기 (이름, 소개, 주제, 검색 허용 등) |
 | `kakao_leave_room` | 채팅방 나가기 (`confirm=true` 필요) |
 | `kakao_get_room_link` | 오픈채팅방 공유 URL 가져오기 |

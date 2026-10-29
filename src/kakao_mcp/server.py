@@ -371,6 +371,7 @@ def kakao_openchat_join(
     profile: str = "kakao",
     passcode: Optional[str] = None,
     nickname: Optional[str] = None,
+    accept_community: bool = False,
 ) -> Dict:
     """Join an open chat room found by search (or open it if already joined).
     Returns the joined room's window title, usable with kakao_send_message,
@@ -385,10 +386,14 @@ def kakao_openchat_join(
         nickname: Join with an open-chat profile under this name (1-20 chars)
             instead of the KakaoTalk profile; overrides profile. Not possible in
             rooms that only allow KakaoTalk profiles (기본프로필만 참여 허용).
+        accept_community: Community rooms ask for consent first (커뮤니티 시작하기:
+            messages become public and searchable, kept 90 days). Only set True
+            when the user agreed; otherwise the consent is declined and the
+            join stops with an error saying so.
     """
     return _openchat_call(
         openchat.join_openchat, query, title=title, index=index, profile=profile, passcode=passcode,
-        nickname=nickname,
+        nickname=nickname, accept_community=accept_community,
     )
 
 

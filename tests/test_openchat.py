@@ -83,3 +83,27 @@ class TestParseItem:
         )
         assert item["title"] == "<코딩 테스트 합격자 되기>(파이썬/ JS)"
         assert item["members"] == 798
+
+
+class TestCommunityDialog:
+    # OCR of the "커뮤니티 시작하기" dialog (302x365): body text, then the buttons
+    LINES = [
+        {"text": "커뮤니티 시작하기", "x": 30, "y": 24, "cx": 86, "cy": 31},
+        {"text": "커뮤니티 메시지는 90일간 보관되며, 보관기간", "x": 30, "y": 175, "cx": 154, "cy": 182},
+        {"text": "동의", "x": 70, "y": 318, "cx": 82, "cy": 325},
+        {"text": "취소", "x": 206, "y": 318, "cx": 218, "cy": 325},
+    ]
+
+    def _answer(self, accept):
+        with patch.object(openchat, "_ocr_window", return_value=self.LINES), \
+                patch.object(openchat, "_size", return_value=(302, 365)), \
+                patch.object(openchat, "_click") as click, \
+                patch.object(openchat, "_wait_for", return_value=True):
+            openchat._answer_community(1, accept)
+        return click.call_args.args
+
+    def test_decline_clicks_cancel(self):
+        assert self._answer(False) == (1, 218, 325)
+
+    def test_accept_clicks_agree(self):
+        assert self._answer(True) == (1, 82, 325)
