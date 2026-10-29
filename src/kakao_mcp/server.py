@@ -370,6 +370,7 @@ def kakao_openchat_join(
     index: int = 0,
     profile: str = "kakao",
     passcode: Optional[str] = None,
+    nickname: Optional[str] = None,
 ) -> Dict:
     """Join an open chat room found by search (or open it if already joined).
     Returns the joined room's window title, usable with kakao_send_message,
@@ -381,9 +382,13 @@ def kakao_openchat_join(
         index: 0-based index in the search results when title is not given.
         profile: 'kakao' to join with the KakaoTalk profile, 'random' for a random nickname.
         passcode: Participation code (참여 코드) if the room requires one.
+        nickname: Join with an open-chat profile under this name (1-20 chars)
+            instead of the KakaoTalk profile; overrides profile. Not possible in
+            rooms that only allow KakaoTalk profiles (기본프로필만 참여 허용).
     """
     return _openchat_call(
         openchat.join_openchat, query, title=title, index=index, profile=profile, passcode=passcode,
+        nickname=nickname,
     )
 
 

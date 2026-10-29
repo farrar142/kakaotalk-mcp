@@ -8,7 +8,9 @@ Flows were mapped against KakaoTalk PC 26.9 (Windows, 100% display scale):
   ``EVA_Window_Dblclk`` children, read with OCR.
 - Double-clicking a search result opens a preview window whose bottom button
   is "오픈채팅 참여하기" (or "채팅방 들어가기" when already joined). Joining
-  shows a "프로필 설정" dialog (KakaoTalk profile vs. random nickname).
+  shows a "프로필 설정" dialog (KakaoTalk profile vs. random nickname). Picking
+  the random profile enables the nickname ``Edit`` below the list, so the
+  open-chat profile can be given any name (1-20 chars).
 - A chat room window's ≡ menu is an ``EVA_Menu`` popup with "채팅방 URL 복사",
   "채팅방 나가기", ...; leaving asks for confirmation ("나가기" / "취소").
 - "+ 만들기" opens "오픈채팅 만들기" with a name ``Edit``, a description
@@ -470,7 +472,8 @@ def _find_titled_window(title: str, exclude: Set[int]) -> Optional[int]:
 
 
 def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
-                  profile: str = "kakao", passcode: Optional[str] = None) -> Dict:
+                  profile: str = "kakao", passcode: Optional[str] = None,
+                  nickname: Optional[str] = None) -> Dict:
     """Search, open the preview of a result, and join it.
 
     Args:
@@ -479,9 +482,16 @@ def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
         index: 0-based result index when ``title`` is not given.
         profile: "kakao" (KakaoTalk profile) or "random" (random nickname).
         passcode: Participation code for code-protected rooms.
+        nickname: Join with an open-chat profile of this name (1-20 chars)
+            instead of the KakaoTalk profile; implies ``profile="random"``.
     """
     if profile not in ("kakao", "random"):
         return {"success": False, "error": "profile must be 'kakao' or 'random'"}
+    if nickname is not None:
+        nickname = nickname.strip()
+        if not nickname or len(nickname) > 20:
+            return {"success": False, "error": "nickname must be 1-20 characters"}
+        profile = "random"
 
     oc = _run_search(query)
     item = _locate_result(oc, title, index)
@@ -516,7 +526,7 @@ def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
             dtitle = win32gui.GetWindowText(dialog)
             if dtitle == "프로필 설정":
                 time.sleep(0.4)
-                _confirm_profile(dialog, profile)
+                _confirm_profile(dialog, profile, nickname)
                 handled.add(dialog)
             elif dtitle:
                 continue  # a titled window: possibly the room, checked below
@@ -556,10 +566,20 @@ def _joined(room: int, already: bool) -> Dict:
     }
 
 
-def _confirm_profile(dialog: int, profile: str):
+def _confirm_profile(dialog: int, profile: str, nickname: Optional[str] = None):
     w, h = _size(dialog)
     if profile == "random":
         _click(dialog, *config.PROFILE_RANDOM_RADIO_POS)
+    if nickname:
+        # The nickname box is disabled until the random profile is selected
+        edit = next((c for c in _children(dialog, direct=False) if win32gui.GetClassName(c) == "Edit"), None)
+        if not edit:
+            raise UIError("Nickname field not found in the 프로필 설정 dialog")
+        _set_text(edit, nickname)
+        time.sleep(0.2)
+        if _get_text(edit) != nickname:
+            _click(dialog, w - config.FORM_CANCEL_FROM_RIGHT, h - config.DIALOG_BUTTON_FROM_BOTTOM)
+            raise UIError(f"Nickname was not accepted (field shows {_get_text(edit)!r})")
     _click(dialog, w / 2 - config.PROFILE_CONFIRM_FROM_CENTER, h - config.DIALOG_BUTTON_FROM_BOTTOM)
 
 
