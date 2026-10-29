@@ -4,6 +4,10 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Windows](https://img.shields.io/badge/platform-Windows-0078d4.svg)](https://www.microsoft.com/windows)
 
+> 이 저장소는 [kronenz/kakaotalk-mcp](https://github.com/kronenz/kakaotalk-mcp)(MIT)를 포크해
+> 오픈채팅(검색·참여·만들기·나가기), 대화 기록 DB, 톡게시판 읽기, 원격 접속용 OAuth 2.1 인가 서버,
+> 링크 오클릭 방지 등을 더한 확장판입니다. 원본의 저작권 표시와 라이선스는 [LICENSE](LICENSE)에 그대로 두었습니다.
+
 카카오톡 PC를 Win32 API로 제어하는 [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) 서버입니다.
 
 Claude Desktop, Claude Code 등 MCP 클라이언트에서 카카오톡 메시지를 보내고, 읽고, 채팅방을 관리할 수 있습니다.
@@ -20,7 +24,7 @@ Claude Desktop, Claude Code 등 MCP 클라이언트에서 카카오톡 메시지
 | `kakao_send_message` | 채팅방에 메시지 전송 |
 | `kakao_send_bulk` | 여러 채팅방에 동일 메시지 일괄 전송 |
 | `kakao_send_mention` | @멘션과 함께 메시지 전송 |
-| `kakao_read_messages` | 채팅방 메시지 읽기 |
+| `kakao_read_messages` | 채팅방 메시지 읽기 (날짜·24시간 시각 포함, 읽은 내용은 대화 기록 DB에도 저장) |
 | `kakao_extract_links` | 채팅방에서 공유된 URL 추출 |
 | `kakao_send_image` | 채팅방에 이미지 파일 전송 |
 | `kakao_download_images` | 카카오톡 캐시에서 최근 이미지 다운로드 |
@@ -30,7 +34,7 @@ Claude Desktop, Claude Code 등 MCP 클라이언트에서 카카오톡 메시지
 | 도구 | 설명 |
 |------|------|
 | `kakao_openchat_search` | 오픈채팅방 검색 (이름/소개/태그, OCR로 결과 읽기) |
-| `kakao_openchat_join` | 검색 결과의 오픈채팅방 참여 (카카오 프로필 / 랜덤 닉네임 / 지정 닉네임 오픈프로필, 참여 코드). 커뮤니티 방의 "커뮤니티 시작하기" 동의는 `accept_community=true`일 때만 수락, 아니면 취소 후 중단 |
+| `kakao_openchat_join` | 검색 결과의 오픈채팅방 참여 (카카오 프로필 / 랜덤 닉네임 / 지정 닉네임 오픈프로필, 참여 코드). 커뮤니티 방의 "커뮤니티 시작하기"는 `accept_community=true`, "세이프봇 적용 동의"는 `accept_safebot=true`일 때만 수락, 아니면 취소 후 중단 |
 | `kakao_openchat_create` | 그룹 오픈채팅방 만들기 (이름, 소개, 주제, 검색 허용 등) |
 | `kakao_leave_room` | 채팅방 나가기 (`confirm=true` 필요) |
 | `kakao_get_room_link` | 오픈채팅방 공유 URL 가져오기 |
@@ -38,6 +42,21 @@ Claude Desktop, Claude Code 등 MCP 클라이언트에서 카카오톡 메시지
 참여한 오픈채팅방은 일반 채팅방과 같은 창이므로 `kakao_send_message`, `kakao_read_messages` 등을 그대로 사용합니다.
 
 오픈채팅 목록·메뉴는 카카오톡이 직접 그리는 화면이라 Windows 내장 OCR(한국어)로 읽습니다. 제목에 약간의 인식 오류가 있을 수 있으며, 참여/선택은 유사도 매칭으로 처리합니다. 좌표는 카카오톡 PC 26.9, 디스플레이 배율 100% 기준입니다.
+
+### 대화 기록 · 게시판 도구
+
+| 도구 | 설명 |
+|------|------|
+| `kakao_history_record` | 채팅방 대화를 SQLite DB에 기록 (지금 한 번 + 주기적으로, 서버 재시작 후에도 계속) |
+| `kakao_history_stop` | 기록 중지 (저장된 내용은 유지) |
+| `kakao_history_status` | 기록 중인 방, 마지막 수집 시각·오류, 방별 저장 건수 |
+| `kakao_history_search` | 저장된 대화 검색: 방, 날짜(`date` / `date_from`~`date_to`), 키워드, 보낸 사람, 최근 N건(`limit`) |
+| `kakao_read_board` | 톡게시판 글 읽기 (공지 / 일정 / 투표 / 퀴즈 탭, 제목·작성자·작성일·댓글 수·본문) |
+
+대화 기록은 `%LOCALAPPDATA%\kakaotalk-mcp\history.db`에 저장됩니다. 카카오톡이 메시지 ID를 주지 않으므로
+(방, 날짜, 시각, 보낸 사람, 내용, 같은 분 안에서 같은 내용의 순번)으로 같은 메시지를 판별해 중복 저장하지 않습니다.
+한 번의 수집은 채팅방 창에 불러와진 메시지만 복사하므로, 대화가 많은 방은 수집 간격을 짧게 두세요.
+게시판 목록의 제목·날짜는 OCR로 읽고(약간의 인식 오류 가능), 본문은 상세보기에서 복사해 정확합니다. 댓글 내용은 읽지 않습니다.
 
 ### 모니터링 도구
 
@@ -55,24 +74,27 @@ Claude Desktop, Claude Code 등 MCP 클라이언트에서 카카오톡 메시지
 
 ## 설치
 
+> PyPI의 `kakaotalk-mcp` 패키지(`uvx kakaotalk-mcp`, `pip install kakaotalk-mcp`)는 **원본** 버전이라
+> 이 저장소의 확장 기능이 없습니다. 이 버전은 아래처럼 GitHub에서 설치하세요.
+
 ### uvx (권장)
 
 별도 설치 없이 바로 실행:
 
 ```bash
-uvx kakaotalk-mcp
+uvx --from git+https://github.com/farrar142/kakaotalk-mcp kakaotalk-mcp
 ```
 
 ### pip
 
 ```bash
-pip install kakaotalk-mcp
+pip install git+https://github.com/farrar142/kakaotalk-mcp
 ```
 
 ### 소스에서 설치
 
 ```bash
-git clone https://github.com/kronenz/kakaotalk-mcp.git
+git clone https://github.com/farrar142/kakaotalk-mcp.git
 cd kakaotalk-mcp
 pip install -e .
 ```
@@ -90,7 +112,7 @@ pip install -e .
   "mcpServers": {
     "kakao": {
       "command": "uvx",
-      "args": ["kakaotalk-mcp"]
+      "args": ["--from", "git+https://github.com/farrar142/kakaotalk-mcp", "kakaotalk-mcp"]
     }
   }
 }
@@ -129,7 +151,7 @@ pip install -e .
 Claude Code 설정에서 MCP 서버 추가:
 
 ```bash
-claude mcp add kakao -- uvx kakaotalk-mcp
+claude mcp add kakao -- uvx --from git+https://github.com/farrar142/kakaotalk-mcp kakaotalk-mcp
 ```
 
 또는 `.claude/settings.json`에 직접 추가:
@@ -139,7 +161,7 @@ claude mcp add kakao -- uvx kakaotalk-mcp
   "mcpServers": {
     "kakao": {
       "command": "uvx",
-      "args": ["kakaotalk-mcp"]
+      "args": ["--from", "git+https://github.com/farrar142/kakaotalk-mcp", "kakaotalk-mcp"]
     }
   }
 }
@@ -222,6 +244,8 @@ Claude에게 자연어로 요청하면 됩니다:
 - **채팅방 이름 정확히 입력**: `kakao_send_message`, `kakao_read_messages`는 채팅방 창 제목이 정확히 일치해야 합니다. 먼저 `kakao_list_open_rooms`로 정확한 이름을 확인하세요.
 - **이미지 전송**: `kakao_send_image`는 파일을 클립보드에 복사한 후 Ctrl+V로 붙여넣는 방식입니다. 전송 확인 다이얼로그가 자동으로 처리됩니다. JPG, PNG, GIF, BMP, WebP 형식을 지원합니다.
 - **이미지 다운로드**: 카카오톡 로컬 캐시에서 가져오며, 채팅방별 구분 없이 최근 캐시된 이미지가 다운로드됩니다.
+- **대화 기록**: `kakao_history_record`는 수집할 때마다 채팅방 창을 잠시 최전면으로 올립니다(최소 간격 60초). 창이 닫혀 있으면 검색으로 다시 엽니다. 모든 UI 조작은 하나의 잠금으로 순서대로 실행되어 수집이 다른 도구 호출과 섞이지 않습니다.
+- **링크 보호**: 메시지 목록은 클릭하지 않고 키보드로만 다룹니다. 그래도 작업 중 브라우저 창·탭, 카톡 링크 미리보기, "이 링크에 연결할까요?" 확인 창이 뜨면 자동으로 닫고 원래 창으로 돌아가며, 결과의 `link_warnings`와 `kakao_history_status`의 `link_events`에 남깁니다. 작업하는 몇 초 사이에 직접 연 브라우저 창도 닫힐 수 있습니다.
 - **모니터링 기능**: `kakao_start_monitor`는 백그라운드에서 채팅방을 주기적으로 폴링합니다. 폴링 시마다 카카오톡 창이 잠시 최전면으로 올라오며, 최소 폴링 간격은 3초입니다.
 
 ## 로드맵

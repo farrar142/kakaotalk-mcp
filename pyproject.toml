@@ -33,9 +33,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kronenz/kakaotalk-mcp"
-Repository = "https://github.com/kronenz/kakaotalk-mcp"
-Issues = "https://github.com/kronenz/kakaotalk-mcp/issues"
+Homepage = "https://github.com/farrar142/kakaotalk-mcp"
+Repository = "https://github.com/farrar142/kakaotalk-mcp"
+Issues = "https://github.com/farrar142/kakaotalk-mcp/issues"
+Upstream = "https://github.com/kronenz/kakaotalk-mcp"
 
 [project.scripts]
 kakaotalk-mcp = "kakao_mcp.server:main"
