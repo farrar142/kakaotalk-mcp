@@ -39,6 +39,7 @@ IMAGE_CACHE_SUBDIRS = [
 CLIPBOARD_MAX_RETRIES = 5
 CLIPBOARD_RETRY_INTERVAL_SEC = 0.1
 KEY_COMBO_WAIT_SEC = 0.15  # Was 0.3 — Ctrl+A/C combo wait
+READ_SELECT_WAITS_SEC = (0.5, 1.0, 2.0, 3.0)  # Ctrl+A → Ctrl+C, longer each time until two copies agree
 
 # Window and focus timing
 WINDOW_ACTIVATE_WAIT_SEC = 0.15  # Was 0.2 — after bring_window_to_front
@@ -89,6 +90,17 @@ FORM_OPTION_CHECK_X = 32  # radio/checkbox column on the create form
 FORM_CONFIRM_FROM_CENTER = 69  # "확인" sits right of the form center
 FORM_CANCEL_FROM_RIGHT = 62
 LEAVE_ACK_CHECK_OFFSET = 20  # owner-leave checkbox sits left of its label
+
+# Room board (톡게시판) window
+BOARD_BACK_POS = (28, 47)  # ← in 상세보기
+BOARD_TAB_Y = 90
+BOARD_TAB_X = {"공지": 34, "일정": 80, "투표": 126, "퀴즈": 172}
+BOARD_LIST_TOP = 110  # list viewport starts below the tabs
+BOARD_THUMB_WIDTH = 75  # thumbnail column cropped off before OCR
+BOARD_META_MIN_LUMA = 90  # meta lines are gray (~118), titles near-black
+BOARD_TITLE_GAP = 25  # px between lines that still belong to one title
+BOARD_SCROLL_NOTCHES = 3
+BOARD_NAV_WAIT_SEC = 0.8
 
 # Default output directory for downloaded images
 DEFAULT_IMAGE_OUTPUT_DIR = os.path.join(

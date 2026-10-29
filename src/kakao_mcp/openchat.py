@@ -12,7 +12,8 @@ Flows were mapped against KakaoTalk PC 26.9 (Windows, 100% display scale):
   the random profile enables the nickname ``Edit`` below the list, so the
   open-chat profile can be given any name (1-20 chars). Community rooms first
   show a modal "커뮤니티 시작하기" consent dialog over the preview (messages
-  are public and searchable, kept 90 days; "동의" / "취소").
+  are public and searchable, kept 90 days; "동의" / "취소"). Rooms with
+  SafeBot show an untitled "세이프봇 적용 동의" dialog ("동의하고 참여" / "취소").
 - A chat room window's ≡ menu is an ``EVA_Menu`` popup with "채팅방 URL 복사",
   "채팅방 나가기", ...; leaving asks for confirmation ("나가기" / "취소").
 - "+ 만들기" opens "오픈채팅 만들기" with a name ``Edit``, a description
@@ -51,6 +52,7 @@ WM_GETTEXT = 0x000D
 
 CREATED_DIALOG_TITLE = "오픈채팅방을 만들었습니다."
 COMMUNITY_DIALOG_TITLE = "커뮤니티 시작하기"
+SAFEBOT_DIALOG_TEXT = "세이프봇 적용 동의"
 NO_RESULTS_TEXT = "검색 결과가 없습니다"
 
 SEPARATOR_RGB = (237, 237, 237)
@@ -477,7 +479,8 @@ def _find_titled_window(title: str, exclude: Set[int]) -> Optional[int]:
 
 def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
                   profile: str = "kakao", passcode: Optional[str] = None,
-                  nickname: Optional[str] = None, accept_community: bool = False) -> Dict:
+                  nickname: Optional[str] = None, accept_community: bool = False,
+                  accept_safebot: bool = False) -> Dict:
     """Search, open the preview of a result, and join it.
 
     Args:
@@ -491,6 +494,8 @@ def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
         accept_community: Agree to the "커뮤니티 시작하기" terms of community
             rooms (messages become public). If False, the dialog is declined
             and nothing is joined.
+        accept_safebot: Agree to "세이프봇 적용 동의" (SafeBot may hide
+            messages under Kakao's policy). If False, it is declined.
     """
     if profile not in ("kakao", "random"):
         return {"success": False, "error": "profile must be 'kakao' or 'random'"}
@@ -523,6 +528,25 @@ def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
     _click(preview, pw / 2, btn_y)
 
     handled: Set[int] = set()
+    try:
+        return _answer_join_dialogs(preview, before, handled, room_title, profile, nickname,
+                                    passcode, accept_community, accept_safebot)
+    except Exception:
+        # Untitled windows only: a titled one may be the room that just opened
+        leftovers = {h for h in _kakao_windows() - before - handled if not win32gui.GetWindowText(h)}
+        _close_preview(preview, extra=leftovers)
+        raise
+
+
+def _decline(room_title: str, what: str, flag: str) -> Dict:
+    return {"success": False, "error": f"'{room_title}' asks to agree to '{what}'. Declined; "
+                                       f"pass {flag}=True to agree."}
+
+
+def _answer_join_dialogs(preview: int, before: Set[int], handled: Set[int], room_title: str,
+                         profile: str, nickname: Optional[str], passcode: Optional[str],
+                         accept_community: bool, accept_safebot: bool) -> Dict:
+    """Answer the dialogs that follow "오픈채팅 참여하기" until the room opens."""
     passcode_sent = False
     end = time.time() + 10
     while time.time() < end:
@@ -537,24 +561,27 @@ def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
                 handled.add(dialog)
             elif dtitle == COMMUNITY_DIALOG_TITLE:
                 time.sleep(0.4)
-                _answer_community(dialog, accept_community)
+                _answer_dialog(dialog, "동의" if accept_community else "취소")
                 handled.add(dialog)
                 if not accept_community:
                     _close_preview(preview)
-                    return {"success": False, "community": True,
-                            "error": f"'{room_title}' is a community room: joining requires agreeing to "
-                                     f"'{COMMUNITY_DIALOG_TITLE}' (messages are public and searchable, "
-                                     "kept 90 days). Declined; pass accept_community=True to agree."}
+                    return _decline(room_title, f"{COMMUNITY_DIALOG_TITLE} (messages are public and "
+                                                "searchable, kept 90 days)", "accept_community")
             elif dtitle and ocr.similarity(dtitle, room_title) < 0.75 and _owner(dialog) == preview:
-                text = _ocr_text(dialog)
-                _close_preview(preview)
-                raise UIError(f"Unexpected dialog '{dtitle}' while joining: {text}")
+                raise UIError(f"Unexpected dialog '{dtitle}' while joining: {_ocr_text(dialog)}")
             elif dtitle:
                 continue  # a titled window: possibly the room, checked below
             else:
                 time.sleep(0.4)
                 text = _ocr_text(dialog)
-                if "코드" in text and passcode and not passcode_sent:
+                if ocr.normalize("세이프봇") in ocr.normalize(text):
+                    _answer_dialog(dialog, "동의하고 참여" if accept_safebot else "취소")
+                    handled.add(dialog)
+                    if not accept_safebot:
+                        _close_preview(preview)
+                        return _decline(room_title, f"{SAFEBOT_DIALOG_TEXT} (SafeBot may hide messages "
+                                                    "under Kakao's policy)", "accept_safebot")
+                elif "코드" in text and passcode and not passcode_sent:
                     edits = [c for c in _children(dialog, direct=False)
                              if win32gui.GetClassName(c) == "Edit"]
                     if not edits:
@@ -573,7 +600,6 @@ def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
     if win32gui.IsWindow(preview) and win32gui.IsWindowVisible(preview):
         modals = [h for h in _kakao_windows() if _owner(h) == preview]
         detail = " | ".join(_ocr_text(h) for h in modals + [preview])
-        _close_preview(preview)
         raise UIError(f"Join did not complete; preview still open: {detail}")
     raise UIError(f"Room window for '{room_title}' did not open")
 
@@ -582,32 +608,44 @@ def _owner(hwnd: int) -> int:
     return win32gui.GetWindow(hwnd, GW_OWNER)
 
 
-def _close_preview(preview: int):
-    """Close the preview window, dismissing any modal it owns first.
+def _is_open(hwnd: int) -> bool:
+    return bool(win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd))
 
-    A modal leaves the preview disabled, so WM_CLOSE to it alone is ignored.
+
+def _close_preview(preview: int, extra: Set[int] = frozenset()):
+    """Close the preview window, dismissing its dialogs (and ``extra`` windows) first.
+
+    A modal leaves the preview disabled, so WM_CLOSE to it alone is ignored, and a
+    leftover dialog would keep the focus from the next operation.
     """
-    for h in _kakao_windows():
-        if _owner(h) == preview:
-            win32gui.PostMessage(h, WM_CLOSE, 0, 0)
-    _wait_for(lambda: None if any(_owner(h) == preview for h in _kakao_windows()) else True, 3)
-    if win32gui.IsWindow(preview):
+    for h in {h for h in _kakao_windows() if _owner(h) == preview} | set(extra):
+        if _is_open(h) and h != preview:
+            _dismiss(h)
+    if _is_open(preview):
         win32gui.PostMessage(preview, WM_CLOSE, 0, 0)
+        _wait_for(lambda: None if _is_open(preview) else True, 3)
 
 
-def _answer_community(dialog: int, accept: bool):
-    """Click "동의" or "취소" on the "커뮤니티 시작하기" consent dialog."""
+def _dismiss(dialog: int):
+    """Close a dialog with its "취소" button, or WM_CLOSE when there is none."""
+    try:
+        _answer_dialog(dialog, "취소")
+    except Exception:
+        if _is_open(dialog):
+            win32gui.PostMessage(dialog, WM_CLOSE, 0, 0)
+            _wait_for(lambda: None if _is_open(dialog) else True, 2)
+
+
+def _answer_dialog(dialog: int, label: str):
+    """Click the bottom button labelled ``label`` (e.g. "동의", "취소") and wait for the dialog to close."""
     lines = _ocr_window(dialog)
     _, h = _size(dialog)
-    btn = ocr.find_line([ln for ln in lines if ln["y"] > h - 70], "동의" if accept else "취소", threshold=0.75)
+    btn = ocr.find_line([ln for ln in lines if ln["y"] > h - 70], label, threshold=0.75)
     if not btn:
-        win32gui.PostMessage(dialog, WM_CLOSE, 0, 0)
-        raise UIError(f"Buttons not found on '{COMMUNITY_DIALOG_TITLE}': "
-                      f"{' / '.join(ln['text'] for ln in lines)}")
+        raise UIError(f"Button '{label}' not found on dialog: {' / '.join(ln['text'] for ln in lines)}")
     _click(dialog, btn["cx"], btn["cy"])
-    if not _wait_for(lambda: None if win32gui.IsWindow(dialog) and win32gui.IsWindowVisible(dialog) else True, 3):
-        raise UIError(f"'{COMMUNITY_DIALOG_TITLE}' did not close after clicking "
-                      f"{'동의' if accept else '취소'}")
+    if not _wait_for(lambda: None if _is_open(dialog) else True, 3):
+        raise UIError(f"Dialog did not close after clicking '{label}'")
 
 
 def _joined(room: int, already: bool) -> Dict:

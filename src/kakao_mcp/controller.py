@@ -5,6 +5,8 @@ import time
 import ctypes
 import shutil
 import hashlib
+import functools
+import re
 import subprocess
 import threading
 from collections import deque
@@ -22,6 +24,239 @@ from . import config
 def _log(msg: str):
     """Write debug message to stderr (visible in MCP server logs)."""
     print(f"[kakao-controller] {msg}", file=sys.stderr, flush=True)
+
+
+class _UiLock:
+    """Re-entrant lock held for every UI interaction (tool calls, monitor and
+    history polls), so nothing clicks, types or copies in the middle of another
+    operation.
+
+    Besides the in-process lock it holds a named mutex, so a second server or
+    script driving KakaoTalk in this session waits too: the clipboard and the
+    focus are shared, and two processes copying chats at once mix rooms up.
+    """
+    MUTEX_NAME = "Local\\kakaotalk-mcp-ui"
+    TIMEOUT_MS = 120_000
+    WAIT_TIMEOUT = 0x102
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._mutex = ctypes.windll.kernel32.CreateMutexW(None, False, self.MUTEX_NAME)
+
+    def __enter__(self):
+        self._lock.acquire()
+        if ctypes.windll.kernel32.WaitForSingleObject(self._mutex, self.TIMEOUT_MS) == self.WAIT_TIMEOUT:
+            self._lock.release()
+            raise TimeoutError("Another process has been using KakaoTalk for 2 minutes")
+        return self
+
+    def __exit__(self, *exc):
+        ctypes.windll.kernel32.ReleaseMutex(self._mutex)
+        self._lock.release()
+
+
+UI_LOCK = _UiLock()
+
+
+def ui_exclusive(fn):
+    """Run a tool under UI_LOCK and a LinkGuard; closed link windows are reported
+    in the result's ``link_warnings``."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with UI_LOCK:
+            guard = LinkGuard(context=fn.__name__)
+            result = fn(*args, **kwargs)
+            events = guard.check()
+        if events and isinstance(result, dict):
+            result["link_warnings"] = result.get("link_warnings", []) + events
+        return result
+    return wrapper
+
+
+# ---------------------------------------------------------------------------
+# Accidentally opened links
+# ---------------------------------------------------------------------------
+
+BROWSER_EXES = {"chrome.exe", "msedge.exe", "firefox.exe", "whale.exe", "opera.exe",
+                "brave.exe", "iexplore.exe", "naverwhale.exe"}
+LINK_EVENTS: deque = deque(maxlen=50)  # recent closed link windows, for kakao_history_status
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_COUNTER = re.compile(r"^\(\d+\+?\)\s*")  # "(3) YouTube": unread counts change titles
+
+
+def _exe_name(pid: int) -> str:
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = ctypes.c_ulong(len(buf))
+        if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return os.path.basename(buf.value).lower()
+        return ""
+    finally:
+        k32.CloseHandle(h)
+
+
+def _top_windows() -> Dict[int, tuple]:
+    """Visible top-level windows: hwnd -> (pid, title)."""
+    found: Dict[int, tuple] = {}
+
+    def _cb(hwnd, _):
+        try:
+            if win32gui.IsWindowVisible(hwnd):
+                found[hwnd] = (win32process.GetWindowThreadProcessId(hwnd)[1], win32gui.GetWindowText(hwnd))
+        except Exception:
+            pass  # closed while enumerating
+        return True
+
+    win32gui.EnumWindows(_cb, None)
+    return found
+
+
+def _has_webview(hwnd: int) -> bool:
+    classes: List[str] = []
+    try:
+        win32gui.EnumChildWindows(hwnd, lambda c, _: classes.append(win32gui.GetClassName(c)) or True, None)
+    except Exception:
+        pass
+    return any(c.startswith("Chrome_") for c in classes)
+
+
+class LinkGuard:
+    """Detect and close windows that a stray click on a link opened.
+
+    Snapshot the windows before a UI operation, then ``check()`` after it:
+
+    - a new browser window (WM_CLOSE; links often open in the background), or
+      a browser window whose title changed other than an unread counter such
+      as "(3) YouTube" (a new tab: brought to the front, then Ctrl+W);
+    - a new KakaoTalk window holding a web view (link preview / in-app browser);
+    - with ``strict`` (operations that open nothing, such as copying a chat):
+      any new KakaoTalk window, e.g. the "외부 링크로 이동" confirmation.
+
+    Afterwards the window that was in the foreground before gets the focus back.
+    """
+
+    def __init__(self, context: str = "", strict: bool = False):
+        self.context = context
+        self.strict = strict
+        self.before = _top_windows()
+        self.foreground = _user32.GetForegroundWindow()
+        self.closed: List[int] = []
+        main = win32gui.FindWindow(config.KAKAO_MAIN_WINDOW_CLASS, config.KAKAO_MAIN_WINDOW_TITLE)
+        self.kakao_pid = win32process.GetWindowThreadProcessId(main)[1] if main else None
+
+    def check(self) -> List[str]:
+        events: List[str] = []
+        fg = _user32.GetForegroundWindow()
+        for hwnd, (pid, title) in _top_windows().items():
+            try:
+                event = self._check_window(hwnd, pid, title)
+            except Exception:
+                if win32gui.IsWindow(hwnd):
+                    raise
+                continue  # closed in the meantime: nothing to do
+            if event:
+                events.append(event)
+        if events:
+            # WM_CLOSE is asynchronous: wait for the windows to go before taking the
+            # focus back, or Windows activates whatever was behind them afterwards
+            end = time.time() + 3
+            while time.time() < end and any(win32gui.IsWindow(h) and win32gui.IsWindowVisible(h)
+                                            for h in self.closed):
+                time.sleep(0.1)
+            if self.foreground and win32gui.IsWindow(self.foreground):
+                for _ in range(3):
+                    bring_window_to_front(self.foreground)
+                    time.sleep(config.WINDOW_ACTIVATE_WAIT_SEC)
+                    if _user32.GetForegroundWindow() == self.foreground:
+                        break
+        return events
+
+    def _check_window(self, hwnd: int, pid: int, title: str) -> Optional[str]:
+        if pid == self.kakao_pid:
+            if hwnd in self.before or not (self.strict or _has_webview(hwnd)) or self._is_ad(hwnd):
+                return None
+            return self._close(hwnd, f"KakaoTalk window '{title}'")
+        if _exe_name(pid) not in BROWSER_EXES:
+            return None
+        if hwnd not in self.before:
+            return self._close(hwnd, f"browser window '{title}'")
+        if _COUNTER.sub("", self.before[hwnd][1]) == _COUNTER.sub("", title):
+            return None
+        bring_window_to_front(hwnd)
+        time.sleep(config.WINDOW_ACTIVATE_WAIT_SEC)
+        if _user32.GetForegroundWindow() == hwnd:
+            _send_ctrl_key_combo(0x57)  # Ctrl+W closes the tab the link opened
+            return self._log_event(f"closed browser tab '{title}'")
+        return self._log_event(f"browser tab '{title}' opened but could not be closed")
+
+    def _is_ad(self, hwnd: int) -> bool:
+        """The ad banner (a web view ~100 px high) KakaoTalk attaches to its main window."""
+        r = win32gui.GetWindowRect(hwnd)
+        main = win32gui.FindWindow(config.KAKAO_MAIN_WINDOW_CLASS, config.KAKAO_MAIN_WINDOW_TITLE)
+        return bool(main) and win32gui.GetWindow(hwnd, win32con.GW_OWNER) == main and r[3] - r[1] <= 120
+
+    def _close(self, hwnd: int, what: str) -> str:
+        self.closed.append(hwnd)
+        if self.strict and not _has_webview(hwnd) and not win32gui.GetWindowText(hwnd):
+            from .openchat import _dismiss  # a dialog such as "외부 링크로 이동": answer 취소
+            try:
+                _dismiss(hwnd)
+            except Exception:
+                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+        else:
+            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+        return self._log_event(f"closed {what}")
+
+    def _log_event(self, text: str) -> str:
+        msg = f"{text} (opened during {self.context}; probably a link was clicked)"
+        LINK_EVENTS.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "event": msg})
+        _log(f"LinkGuard: {msg}")
+        return msg
+
+
+def close_link_dialogs(room_hwnd: int) -> List[str]:
+    """Answer "취소" on link confirmations ("주의 … 이 링크에 연결할까요? 연결하기 / 취소")
+    left over the room. They are modal, so the room ignores input until closed."""
+    from . import ocr
+    from .openchat import _answer_dialog, _owner
+    closed: List[str] = []
+    for hwnd, (_, title) in _top_windows().items():
+        if title or _owner(hwnd) != room_hwnd:
+            continue
+        r = win32gui.GetWindowRect(hwnd)
+        if r[3] - r[1] > 400:
+            continue
+        try:
+            text = ocr.normalize(" ".join(ln["text"] for ln in ocr.recognize(ocr.grab_window(hwnd))))
+            if ocr.normalize("링크") in text and ocr.normalize("연결하기") in text:
+                _answer_dialog(hwnd, "취소")
+                msg = f"declined a leftover link confirmation over '{win32gui.GetWindowText(room_hwnd)}'"
+                LINK_EVENTS.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "event": msg})
+                _log(f"LinkGuard: {msg}")
+                closed.append(msg)
+        except Exception as e:
+            _log(f"LinkGuard: could not check dialog {hwnd:#x}: {e}")
+    return closed
+
+
+def focus_child(top: int, child: int) -> bool:
+    """Give keyboard focus to ``child`` without clicking it (``top`` must be in front).
+
+    Clicking the message list could hit a link, a profile or an image.
+    """
+    tid = win32process.GetWindowThreadProcessId(top)[0]
+    me = win32api.GetCurrentThreadId()
+    if not _user32.AttachThreadInput(me, tid, True):
+        return False
+    try:
+        _user32.SetFocus(child)
+        return _user32.GetFocus() == child
+    finally:
+        _user32.AttachThreadInput(me, tid, False)
 
 
 # ---------------------------------------------------------------------------
@@ -43,9 +278,25 @@ def is_kakaotalk_running() -> Dict:
     return {"running": True, "hwnd": hwnd, "pid": pid}
 
 
+def is_board_window(hwnd: int) -> bool:
+    """A 톡게시판 window: titled like its room, but holds Moim* views, not the chat list."""
+    names: List[str] = []
+
+    def _cb(child, _):
+        names.append(win32gui.GetWindowText(child))
+        return True
+
+    try:
+        win32gui.EnumChildWindows(hwnd, _cb, None)
+    except Exception:
+        pass
+    return any(n.startswith("Moim") for n in names)
+
+
 def find_chat_window(room_name: str) -> Optional[int]:
     """Find a chat window by exact title (room name).
 
+    The room's 톡게시판 window has the same title and is skipped.
     Returns hwnd or None.
     """
     results: List[int] = []
@@ -59,7 +310,8 @@ def find_chat_window(room_name: str) -> Optional[int]:
         return True
 
     win32gui.EnumWindows(_cb, None)
-    return results[0] if results else None
+    rooms = [h for h in results if not is_board_window(h)]
+    return rooms[0] if rooms else None
 
 
 def list_chat_windows() -> List[Dict]:
@@ -86,7 +338,7 @@ def list_chat_windows() -> List[Dict]:
         return True
 
     win32gui.EnumWindows(_cb, None)
-    return windows
+    return [w for w in windows if not is_board_window(w["hwnd"])]
 
 
 def find_child_window_recursive(parent_hwnd: int, class_name: str) -> Optional[int]:
@@ -542,6 +794,19 @@ def send_images_to_room(room_name: str, image_paths: List[str]) -> Dict:
 # Message reading
 # ---------------------------------------------------------------------------
 
+def _copy_selection() -> str:
+    """Ctrl+C into an emptied clipboard (so stale content is never returned) and read it."""
+    _empty_clipboard()
+    _send_ctrl_key_combo(config.VK_C)
+    time.sleep(config.KEY_COMBO_WAIT_SEC)
+    for _ in range(5):
+        text = _read_clipboard_text()
+        if text:
+            return text
+        time.sleep(0.2)
+    return ""
+
+
 def read_chat_messages(room_name: str) -> Dict:
     """Read messages from a KakaoTalk chat room via Ctrl+A → Ctrl+C.
 
@@ -562,49 +827,58 @@ def read_chat_messages(room_name: str) -> Dict:
             "raw_text": "",
         }
 
+    # A leftover link confirmation is modal: the room can't take the foreground
+    # until it is closed
+    warnings: List[str] = close_link_dialogs(hwnd)
+
     # Bring the chat window to foreground — required for keybd_event
     err = activate_window(hwnd, room_name)
     if err:
-        return {"success": False, "error": err, "raw_text": ""}
+        return {"success": False, "error": err, "raw_text": "", **({"link_warnings": warnings} if warnings else {})}
 
-    # Click on the list control to ensure it has focus
-    try:
-        rect = win32gui.GetWindowRect(list_hwnd)
-        cx = (rect[0] + rect[2]) // 2
-        cy = (rect[1] + rect[3]) // 2
-        _user32.SetCursorPos(cx, cy)
-        _user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
-        _user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
-        time.sleep(config.EDIT_CLICK_WAIT_SEC)
-    except Exception:
-        pass
+    for _ in range(2):  # once more if a link window had to be closed
+        guard = LinkGuard(context=f"reading '{room_name}'", strict=True)
+        # Focus the list without clicking it: a click could land on a link
+        if not focus_child(hwnd, list_hwnd):
+            return {"success": False, "raw_text": "",
+                    "error": f"Could not focus the message list of '{room_name}'. "
+                             + FOREGROUND_ERROR.format(name=room_name)}
 
-    # Start from an empty clipboard so stale content is never returned as the chat
-    _empty_clipboard()
-
-    # Ctrl+A (select all)
-    _send_ctrl_key_combo(config.VK_A)
-    time.sleep(config.KEY_COMBO_WAIT_SEC)
-
-    # Ctrl+C (copy)
-    _send_ctrl_key_combo(config.VK_C)
-    time.sleep(config.KEY_COMBO_WAIT_SEC)
-
-    # Read clipboard (copying a long chat can take a moment)
-    raw_text = ""
-    for _ in range(5):
-        raw_text = _read_clipboard_text()
-        if raw_text:
+        # Selecting a long loaded history takes a while; a Ctrl+C sent before the
+        # selection is done copies nothing, so select again with a longer wait
+        # Ctrl+C before Ctrl+A has finished selecting copies part of the chat (just
+        # the date line or the first bubble), and the selection then stays partial.
+        # So select again with a longer wait each time, until two copies agree.
+        raw_text, previous = "", None
+        for select_wait in config.READ_SELECT_WAITS_SEC:
+            _send_ctrl_key_combo(config.VK_A)
+            time.sleep(select_wait)
+            raw_text = _copy_selection()
+            if raw_text and raw_text == previous:
+                break
+            previous = raw_text
+            if _user32.GetForegroundWindow() != hwnd:
+                break
+        if _user32.GetForegroundWindow() != hwnd:
+            raw_text = ""  # the keys may have gone to another window: don't trust the copy
+        events = guard.check()
+        warnings += events
+        if not events:
             break
-        time.sleep(0.2)
-    if not raw_text:
-        return {
-            "success": False,
-            "error": f"Nothing was copied from '{room_name}'. " + FOREGROUND_ERROR.format(name=room_name),
-            "raw_text": "",
-        }
+        if activate_window(hwnd, room_name):
+            break
 
-    return {"success": True, "raw_text": raw_text}
+    # The list had the focus and the room stayed in front, yet nothing was
+    # copied after the longest wait: the room has no messages (e.g. an empty 나와의 채팅)
+    empty = not raw_text and _user32.GetForegroundWindow() == hwnd
+    result = {"success": bool(raw_text) or empty, "raw_text": raw_text}
+    if empty:
+        result["empty"] = True
+    if warnings:
+        result["link_warnings"] = warnings
+    if not raw_text and not empty:
+        result["error"] = f"Nothing was copied from '{room_name}'. " + FOREGROUND_ERROR.format(name=room_name)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1129,7 +1403,8 @@ class ChatMonitor:
     def _load_initial_messages(self):
         """Read current messages and store their hashes (baseline)."""
         try:
-            result = read_chat_messages(self._room_name)
+            with UI_LOCK:
+                result = read_chat_messages(self._room_name)
             if result["success"]:
                 from . import parser
                 parsed = parser.parse_chat_text(result["raw_text"])
@@ -1154,13 +1429,18 @@ class ChatMonitor:
 
     def _check_for_new_messages(self):
         """Poll for new messages and check for keyword matches."""
-        result = read_chat_messages(self._room_name)
+        with UI_LOCK:
+            result = read_chat_messages(self._room_name)
         if not result["success"]:
             return
 
-        from . import parser
+        from . import history, parser
         parsed = parser.parse_chat_text(result["raw_text"])
         all_messages = parsed["messages"]
+        try:
+            history.store.save(self._room_name, all_messages)
+        except Exception as e:
+            _log(f"Monitor: history save failed: {e}")
 
         new_messages = []
         for msg in all_messages:

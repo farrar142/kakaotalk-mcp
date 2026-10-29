@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """MCP Server for KakaoTalk PC automation via Win32 API."""
 import os
+import re
 from typing import Dict, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -9,7 +10,10 @@ from kakao_mcp import controller
 from kakao_mcp import parser
 from kakao_mcp import config
 from kakao_mcp import openchat
+from kakao_mcp import board
+from kakao_mcp import history
 from kakao_mcp.auth.scopes import MANAGE, READ, SEND, guard
+from kakao_mcp.controller import ui_exclusive
 
 app = FastMCP(
     "kakao-mcp-server",
@@ -56,6 +60,7 @@ def kakao_list_open_rooms() -> Dict:
 
 @app.tool()
 @guard(SEND)
+@ui_exclusive
 def kakao_open_room(room_name: str) -> Dict:
     """Open or bring to front a KakaoTalk chat room by name.
     If the chat window is already open, brings it to foreground.
@@ -79,6 +84,7 @@ def kakao_open_room(room_name: str) -> Dict:
 
 @app.tool()
 @guard(SEND)
+@ui_exclusive
 def kakao_send_message(room_name: str, message: str) -> Dict:
     """Send a text message to a KakaoTalk chat room.
     The chat room window must already be open.
@@ -100,6 +106,7 @@ def kakao_send_message(room_name: str, message: str) -> Dict:
 
 @app.tool()
 @guard(SEND)
+@ui_exclusive
 def kakao_send_bulk(room_names: list[str], message: str, interval_sec: float = 0.5) -> Dict:
     """Send the same message to multiple KakaoTalk chat rooms at once.
     Opens each room if not already open and sends the message sequentially.
@@ -125,6 +132,7 @@ def kakao_send_bulk(room_names: list[str], message: str, interval_sec: float = 0
 
 @app.tool()
 @guard(SEND)
+@ui_exclusive
 def kakao_send_image(room_name: str, image_paths: list[str]) -> Dict:
     """Send image file(s) to a KakaoTalk chat room.
     Copies the image to clipboard using file-drop format and pastes into the chat.
@@ -160,9 +168,12 @@ def kakao_send_image(room_name: str, image_paths: list[str]) -> Dict:
 
 @app.tool()
 @guard(READ)
+@ui_exclusive
 def kakao_read_messages(room_name: str, max_messages: int = 50) -> Dict:
     """Read recent messages from a KakaoTalk chat room.
     Uses clipboard-based reading (Ctrl+A, Ctrl+C on the chat list).
+    Each message has date (YYYY-MM-DD) and time24 (HH:MM); everything read is
+    also saved to the chat history DB (see kakao_history_search).
     NOTE: This briefly brings the chat window to the foreground.
 
     Args:
@@ -175,6 +186,10 @@ def kakao_read_messages(room_name: str, max_messages: int = 50) -> Dict:
             return {"error": result["error"]}
         parsed = parser.parse_chat_text(result["raw_text"])
         messages = parsed["messages"]
+        try:
+            stored = history.store.save(room_name, messages)
+        except Exception as e:
+            stored = {"error": str(e)}
         if len(messages) > max_messages:
             messages = messages[-max_messages:]
         return {
@@ -183,6 +198,8 @@ def kakao_read_messages(room_name: str, max_messages: int = 50) -> Dict:
             "room_name": parsed["room_name"] or room_name,
             "member_count": parsed["member_count"],
             "messages": messages,
+            "history": stored,
+            **({"link_warnings": result["link_warnings"]} if result.get("link_warnings") else {}),
         }
     except Exception as e:
         return {"error": f"Failed to read messages: {e}"}
@@ -190,6 +207,7 @@ def kakao_read_messages(room_name: str, max_messages: int = 50) -> Dict:
 
 @app.tool()
 @guard(READ)
+@ui_exclusive
 def kakao_extract_links(room_name: str) -> Dict:
     """Extract all URLs/links from messages in a KakaoTalk chat room.
     Reads the chat first, then extracts URLs from all messages.
@@ -213,6 +231,7 @@ def kakao_extract_links(room_name: str) -> Dict:
 
 @app.tool()
 @guard(SEND)
+@ui_exclusive
 def kakao_send_mention(room_name: str, mention_name: str, message: str) -> Dict:
     """Send a message with @mention to a KakaoTalk chat room.
     Types '@' to activate the mention popup, selects the target user,
@@ -265,6 +284,7 @@ def kakao_download_images(
 
 @app.tool()
 @guard(SEND)
+@ui_exclusive
 def kakao_start_monitor(
     room_name: str,
     keywords: list[str],
@@ -329,6 +349,138 @@ def kakao_get_monitor_events() -> Dict:
 
 
 # ---------------------------------------------------------------------------
+# Chat history (SQLite)
+# ---------------------------------------------------------------------------
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+@app.tool()
+@guard(SEND)
+def kakao_history_record(room_names: list[str], interval_sec: float = 300) -> Dict:
+    """Record chat rooms' messages into the history DB, now and then periodically.
+    Each capture copies the messages the room window has loaded, so keep the
+    interval short enough that no messages scroll out between captures. A room
+    whose window is closed is opened by search first. Recording continues after
+    server restarts until kakao_history_stop.
+    NOTE: Every capture briefly brings the room window to the foreground.
+
+    Args:
+        room_names: Exact titles of the chat rooms to record.
+        interval_sec: Seconds between captures of each room (minimum 60, default 300).
+    """
+    try:
+        if not room_names:
+            return {"error": "room_names cannot be empty"}
+        results = history.recorder.add(room_names, interval_sec)
+        return {
+            "message": f"Recording {len(room_names)} room(s) every "
+                       f"{max(history.MIN_INTERVAL_SEC, interval_sec):g}s",
+            "first_capture": [
+                {k: v for k, v in r.items() if k != "success"} if r.get("success")
+                else {"room_name": room, "error": r["error"]}
+                for room, r in zip(room_names, results)
+            ],
+        }
+    except Exception as e:
+        return {"error": f"Failed to start recording: {e}"}
+
+
+@app.tool()
+@guard(SEND)
+def kakao_history_stop(room_names: Optional[list[str]] = None) -> Dict:
+    """Stop recording rooms (all rooms when room_names is omitted). Stored messages are kept.
+
+    Args:
+        room_names: Rooms to stop recording; omit to stop all.
+    """
+    try:
+        removed = history.recorder.remove(room_names)
+        return {"message": f"Stopped recording {removed} room(s)"}
+    except Exception as e:
+        return {"error": f"Failed to stop recording: {e}"}
+
+
+@app.tool()
+@guard(READ)
+def kakao_history_status() -> Dict:
+    """Show recorded rooms (interval, last capture, errors) and stored message counts per room.
+    link_events lists windows the server closed because a link was opened by accident."""
+    try:
+        return {
+            "recorder_running": history.recorder.is_running,
+            "link_events": list(controller.LINK_EVENTS),
+            "recorded_rooms": history.store.recorded(),
+            "stored": history.store.room_stats(),
+            "db_path": str(history.store.path),
+        }
+    except Exception as e:
+        return {"error": f"Failed to read history status: {e}"}
+
+
+@app.tool()
+@guard(READ)
+def kakao_history_search(
+    room_name: Optional[str] = None,
+    date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    keyword: Optional[str] = None,
+    sender: Optional[str] = None,
+    limit: int = 50,
+) -> Dict:
+    """Search stored chat history. Returns the latest `limit` matching messages, oldest first.
+    With no filters this is "the most recent N messages". Only messages captured
+    by kakao_history_record, kakao_read_messages or the monitor are stored.
+
+    Args:
+        room_name: Exact room title; omit to search all rooms.
+        date: A single day (YYYY-MM-DD).
+        date_from: First day of a range (YYYY-MM-DD, inclusive).
+        date_to: Last day of a range (YYYY-MM-DD, inclusive).
+        keyword: Text the message contains.
+        sender: Text the sender name contains.
+        limit: Maximum messages (1-1000, default 50).
+    """
+    for name, value in (("date", date), ("date_from", date_from), ("date_to", date_to)):
+        if value and not DATE_RE.match(value):
+            return {"error": f"{name} must be YYYY-MM-DD"}
+    if not 1 <= limit <= 1000:
+        return {"error": "limit must be 1-1000"}
+    try:
+        rows = history.store.search(room_name, date, date_from, date_to, keyword, sender, limit)
+        return {"message": f"Found {len(rows)} message(s)", "count": len(rows), "messages": rows}
+    except Exception as e:
+        return {"error": f"Failed to search history: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# Room board (톡게시판)
+# ---------------------------------------------------------------------------
+
+@app.tool()
+@guard(READ)
+@ui_exclusive
+def kakao_read_board(room_name: str, tab: str = "공지", max_posts: int = 10, include_body: bool = True) -> Dict:
+    """Read posts (공지 notices, 일정, 투표, 퀴즈) from a chat room's 톡게시판, newest first.
+    Each post has title, posted (YYYY-MM-DD HH:MM; approximate for "N시간 전"),
+    posted_raw, author, comments (count) and, with include_body, the full body
+    text. List titles and dates are read with OCR; bodies are copied exactly.
+    The room window must be open; a board window opened for this is closed
+    again afterwards. Comments themselves are not read.
+
+    Args:
+        room_name: Exact title of the chat room window.
+        tab: '공지' (default), '일정', '투표' or '퀴즈'.
+        max_posts: Maximum posts to return (1-50, default 10).
+        include_body: Open each post to copy its body (about 3-4 s per post).
+    """
+    if not 1 <= max_posts <= 50:
+        return {"error": "max_posts must be 1-50"}
+    return _openchat_call(board.read_board, room_name, tab=tab, max_posts=max_posts, include_body=include_body)
+
+
+# ---------------------------------------------------------------------------
 # Open chat (오픈채팅)
 # ---------------------------------------------------------------------------
 
@@ -349,6 +501,7 @@ def _openchat_call(fn, *args, **kwargs) -> Dict:
 
 @app.tool()
 @guard(READ)
+@ui_exclusive
 def kakao_openchat_search(query: str, max_results: int = 10) -> Dict:
     """Search KakaoTalk open chat rooms (group chats) by name/description/tag.
     Results are read from the screen with OCR, so titles may contain small
@@ -364,6 +517,7 @@ def kakao_openchat_search(query: str, max_results: int = 10) -> Dict:
 
 @app.tool()
 @guard(MANAGE)
+@ui_exclusive
 def kakao_openchat_join(
     query: str,
     title: Optional[str] = None,
@@ -372,6 +526,7 @@ def kakao_openchat_join(
     passcode: Optional[str] = None,
     nickname: Optional[str] = None,
     accept_community: bool = False,
+    accept_safebot: bool = False,
 ) -> Dict:
     """Join an open chat room found by search (or open it if already joined).
     Returns the joined room's window title, usable with kakao_send_message,
@@ -390,15 +545,19 @@ def kakao_openchat_join(
             messages become public and searchable, kept 90 days). Only set True
             when the user agreed; otherwise the consent is declined and the
             join stops with an error saying so.
+        accept_safebot: Rooms with SafeBot ask to agree to 세이프봇 적용 동의
+            (messages may be hidden under Kakao's policy). Only set True when
+            the user agreed; otherwise it is declined like accept_community.
     """
     return _openchat_call(
         openchat.join_openchat, query, title=title, index=index, profile=profile, passcode=passcode,
-        nickname=nickname, accept_community=accept_community,
+        nickname=nickname, accept_community=accept_community, accept_safebot=accept_safebot,
     )
 
 
 @app.tool()
 @guard(MANAGE)
+@ui_exclusive
 def kakao_openchat_create(
     name: str,
     description: str = "",
@@ -425,6 +584,7 @@ def kakao_openchat_create(
 
 @app.tool()
 @guard(MANAGE)
+@ui_exclusive
 def kakao_leave_room(room_name: str, confirm: bool = False) -> Dict:
     """Leave a chat room (open chat or regular). This cannot be undone:
     the conversation history is deleted. The room window must be open.
@@ -440,6 +600,7 @@ def kakao_leave_room(room_name: str, confirm: bool = False) -> Dict:
 
 @app.tool()
 @guard(READ)
+@ui_exclusive
 def kakao_get_room_link(room_name: str) -> Dict:
     """Get the share URL of an open chat room (via the room menu's 'URL 복사').
     The room window must be open.
@@ -486,6 +647,7 @@ def main():
 
     app.settings.host = args.host
     app.settings.port = args.port
+    history.recorder.ensure_running()  # resume recording rooms registered earlier
     auth_cfg = load_config(args.auth_config) if args.transport != "stdio" else None
 
     if auth_cfg is None:

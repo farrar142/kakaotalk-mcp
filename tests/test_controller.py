@@ -174,6 +174,9 @@ def test_send_message_no_edit_control(mock_find, mock_child):
 # read_chat_messages
 # ---------------------------------------------------------------------------
 
+@patch("kakao_mcp.controller.close_link_dialogs", return_value=[])
+@patch("kakao_mcp.controller.LinkGuard")
+@patch("kakao_mcp.controller.focus_child", return_value=True)
 @patch("kakao_mcp.controller.time.sleep")
 @patch("kakao_mcp.controller._empty_clipboard")
 @patch("kakao_mcp.controller.activate_window", return_value=None)
@@ -184,7 +187,9 @@ def test_send_message_no_edit_control(mock_find, mock_child):
 @patch("kakao_mcp.controller.find_child_window_recursive")
 @patch("kakao_mcp.controller.find_chat_window")
 def test_read_messages_success(mock_find, mock_child, mock_gui, mock_user32, mock_ctrl, mock_clip,
-                               mock_activate, mock_empty, mock_sleep):
+                               mock_activate, mock_empty, mock_sleep, mock_focus, mock_guard, _sweep):
+    mock_guard.return_value.check.return_value = []
+    mock_user32.GetForegroundWindow.return_value = 11111
     mock_find.return_value = 11111
     mock_child.return_value = 33333
     mock_gui.GetWindowRect.return_value = (0, 0, 100, 100)
@@ -192,9 +197,15 @@ def test_read_messages_success(mock_find, mock_child, mock_gui, mock_user32, moc
     result = controller.read_chat_messages("Room")
     assert result["success"] is True
     assert "Hello" in result["raw_text"]
-    mock_empty.assert_called_once()  # stale clipboard cleared before copying
+    assert mock_empty.call_count == 2  # cleared before the copy and before its confirming copy
+    mock_focus.assert_called_once_with(11111, 33333)
+    mock_user32.mouse_event.assert_not_called()  # the message list is never clicked (links)
+    assert "link_warnings" not in result
 
 
+@patch("kakao_mcp.controller.close_link_dialogs", return_value=[])
+@patch("kakao_mcp.controller.LinkGuard")
+@patch("kakao_mcp.controller.focus_child", return_value=True)
 @patch("kakao_mcp.controller.time.sleep")
 @patch("kakao_mcp.controller._empty_clipboard")
 @patch("kakao_mcp.controller.activate_window", return_value=None)
@@ -205,9 +216,115 @@ def test_read_messages_success(mock_find, mock_child, mock_gui, mock_user32, moc
 @patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
 @patch("kakao_mcp.controller.find_chat_window", return_value=11111)
 def test_read_messages_empty_clipboard_is_error(*mocks):
-    mocks[2].GetWindowRect.return_value = (0, 0, 100, 100)
+    mocks[-2].return_value.check.return_value = []
     result = controller.read_chat_messages("Room")
     assert result["success"] is False and "Nothing was copied" in result["error"]
+
+
+@patch("kakao_mcp.controller.close_link_dialogs", return_value=[])
+@patch("kakao_mcp.controller.LinkGuard")
+@patch("kakao_mcp.controller.focus_child", return_value=False)
+@patch("kakao_mcp.controller._send_ctrl_key_combo")
+@patch("kakao_mcp.controller.activate_window", return_value=None)
+@patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
+@patch("kakao_mcp.controller.find_chat_window", return_value=11111)
+def test_read_messages_unfocusable_list_is_error_without_typing(mock_find, mock_child, mock_activate,
+                                                               mock_ctrl, mock_focus, mock_guard, _sweep):
+    result = controller.read_chat_messages("Room")
+    assert result["success"] is False and "focus the message list" in result["error"]
+    mock_ctrl.assert_not_called()
+
+
+@patch("kakao_mcp.controller.close_link_dialogs", return_value=[])
+@patch("kakao_mcp.controller.LinkGuard")
+@patch("kakao_mcp.controller.focus_child", return_value=True)
+@patch("kakao_mcp.controller.time.sleep")
+@patch("kakao_mcp.controller._empty_clipboard")
+@patch("kakao_mcp.controller.activate_window", return_value=None)
+@patch("kakao_mcp.controller._read_clipboard_text")
+@patch("kakao_mcp.controller._send_ctrl_key_combo")
+@patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
+@patch("kakao_mcp.controller.find_chat_window", return_value=11111)
+def test_read_messages_retries_after_closing_a_link_window(mock_find, mock_child, mock_ctrl, mock_clip,
+                                                           mock_activate, mock_empty, mock_sleep,
+                                                           mock_focus, mock_guard, _sweep):
+    mock_guard.return_value.check.side_effect = [["closed browser window 'x'"], []]
+    mock_clip.side_effect = ["https://example.com", "https://example.com",
+                             "[A] [오전 10:00] Hello", "[A] [오전 10:00] Hello"]
+    with patch.object(controller, "_user32") as u32:
+        u32.GetForegroundWindow.return_value = 11111
+        result = controller.read_chat_messages("Room")
+    assert result["success"] is True and "Hello" in result["raw_text"]
+    assert result["link_warnings"] == ["closed browser window 'x'"]
+    assert mock_focus.call_count == 2
+
+
+class TestLinkGuard:
+    KAKAO, BROWSER = 100, 200
+
+    def _guard(self, before, after, fg, strict=False, webview=()):
+        exes = {self.KAKAO: "kakaotalk.exe", self.BROWSER: "chrome.exe"}
+        with patch.object(controller, "_top_windows", side_effect=[before, after]), \
+                patch.object(controller, "_user32") as u32, \
+                patch.object(controller, "win32gui") as gui, \
+                patch.object(controller, "win32process") as proc, \
+                patch.object(controller, "_exe_name", side_effect=lambda pid: exes[pid]), \
+                patch.object(controller, "_has_webview", side_effect=lambda h: h in webview), \
+                patch.object(controller, "_send_ctrl_key_combo") as ctrl, \
+                patch.object(controller, "bring_window_to_front") as front, \
+                patch.object(controller.time, "sleep"):
+            gui.FindWindow.return_value = 1
+            gui.GetWindowText.return_value = "title"
+            gui.IsWindowVisible.return_value = False  # closed windows are gone at once
+            gui.GetWindow.return_value = 0  # no window is the main window's ad banner
+            proc.GetWindowThreadProcessId.return_value = (0, self.KAKAO)
+            u32.GetForegroundWindow.return_value = fg
+            guard = controller.LinkGuard("test", strict=strict)
+            events = guard.check()
+            return events, gui.PostMessage, ctrl, front
+
+    def test_nothing_new(self):
+        win = {1: (self.KAKAO, "카카오톡"), 5: (self.BROWSER, "Docs")}
+        events, post, ctrl, front = self._guard(win, win, fg=1)
+        assert events == [] and not post.called and not front.called
+
+    def test_new_foreground_browser_window_is_closed(self):
+        before = {1: (self.KAKAO, "카카오톡")}
+        events, post, _, front = self._guard(before, {**before, 9: (self.BROWSER, "YouTube")}, fg=9)
+        assert len(events) == 1 and "browser window" in events[0]
+        post.assert_called_once_with(9, controller.win32con.WM_CLOSE, 0, 0)
+        front.assert_called_once()
+
+    def test_background_browser_window_is_closed_too(self):
+        before = {1: (self.KAKAO, "카카오톡")}
+        events, post, _, _ = self._guard(before, {**before, 9: (self.BROWSER, "YouTube")}, fg=1)
+        assert len(events) == 1
+        post.assert_called_once_with(9, controller.win32con.WM_CLOSE, 0, 0)
+
+    def test_unread_counter_title_change_is_ignored(self):
+        before = {1: (self.KAKAO, "카카오톡"), 5: (self.BROWSER, "(1) YouTube")}
+        events, post, ctrl, _ = self._guard(before, {1: before[1], 5: (self.BROWSER, "(2) YouTube")}, fg=1)
+        assert events == [] and not ctrl.called
+
+    def test_new_tab_in_existing_browser_is_closed_with_ctrl_w(self):
+        before = {1: (self.KAKAO, "카카오톡"), 5: (self.BROWSER, "Docs")}
+        events, post, ctrl, _ = self._guard(before, {1: before[1], 5: (self.BROWSER, "pickle.com")}, fg=5)
+        assert "browser tab" in events[0]
+        ctrl.assert_called_once_with(0x57)
+        assert not post.called
+
+    def test_new_kakao_webview_is_closed(self):
+        before = {1: (self.KAKAO, "카카오톡")}
+        events, post, _, _ = self._guard(before, {**before, 7: (self.KAKAO, "")}, fg=7, webview={7})
+        assert "KakaoTalk window" in events[0]
+        post.assert_called_once_with(7, controller.win32con.WM_CLOSE, 0, 0)
+
+    def test_new_kakao_dialog_only_counts_when_strict(self):
+        before = {1: (self.KAKAO, "카카오톡")}
+        after = {**before, 7: (self.KAKAO, "방 이름")}
+        assert self._guard(before, after, fg=7)[0] == []
+        events, post, _, _ = self._guard(before, after, fg=7, strict=True)
+        assert len(events) == 1
 
 
 @patch("kakao_mcp.controller._send_ctrl_key_combo")
@@ -350,3 +467,119 @@ def test_send_image_room_not_found(mock_find, mock_abs, mock_isfile, mock_split)
     result = controller.send_image_to_room("NoRoom", "C:\\test\\image.jpg")
     assert result["success"] is False
     assert "not found" in result["error"]
+
+
+@patch("kakao_mcp.controller.close_link_dialogs", return_value=["declined a leftover link confirmation"])
+@patch("kakao_mcp.controller.LinkGuard")
+@patch("kakao_mcp.controller.focus_child", return_value=True)
+@patch("kakao_mcp.controller.time.sleep")
+@patch("kakao_mcp.controller._empty_clipboard")
+@patch("kakao_mcp.controller.activate_window", return_value=None)
+@patch("kakao_mcp.controller._read_clipboard_text", return_value="[A] [오전 10:00] Hello")
+@patch("kakao_mcp.controller._send_ctrl_key_combo")
+@patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
+@patch("kakao_mcp.controller.find_chat_window", return_value=11111)
+def test_read_messages_reports_declined_leftover_link_dialog(*mocks):
+    mocks[-2].return_value.check.return_value = []
+    with patch.object(controller, "_user32") as u32:
+        u32.GetForegroundWindow.return_value = 11111
+        result = controller.read_chat_messages("Room")
+    assert result["success"] is True
+    assert result["link_warnings"] == ["declined a leftover link confirmation"]
+
+
+@patch("kakao_mcp.controller.close_link_dialogs", return_value=[])
+@patch("kakao_mcp.controller.LinkGuard")
+@patch("kakao_mcp.controller.focus_child", return_value=True)
+@patch("kakao_mcp.controller.time.sleep")
+@patch("kakao_mcp.controller._empty_clipboard")
+@patch("kakao_mcp.controller.activate_window", return_value=None)
+@patch("kakao_mcp.controller._read_clipboard_text", return_value="[A] [오전 10:00] Other room")
+@patch("kakao_mcp.controller._send_ctrl_key_combo")
+@patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
+@patch("kakao_mcp.controller.find_chat_window", return_value=11111)
+def test_read_messages_discards_copy_when_room_lost_foreground(*mocks):
+    mocks[-2].return_value.check.return_value = []
+    with patch.object(controller, "_user32") as u32:
+        u32.GetForegroundWindow.return_value = 22222  # another window took the keys
+        result = controller.read_chat_messages("Room")
+    assert result["success"] is False and result["raw_text"] == ""
+
+
+@patch("kakao_mcp.controller.close_link_dialogs", return_value=[])
+@patch("kakao_mcp.controller.LinkGuard")
+@patch("kakao_mcp.controller.focus_child", return_value=True)
+@patch("kakao_mcp.controller.time.sleep")
+@patch("kakao_mcp.controller._empty_clipboard")
+@patch("kakao_mcp.controller.activate_window", return_value=None)
+@patch("kakao_mcp.controller._read_clipboard_text", return_value="")
+@patch("kakao_mcp.controller._send_ctrl_key_combo")
+@patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
+@patch("kakao_mcp.controller.find_chat_window", return_value=11111)
+def test_read_messages_empty_room_is_not_an_error(*mocks):
+    mocks[-2].return_value.check.return_value = []
+    with patch.object(controller, "_user32") as u32:
+        u32.GetForegroundWindow.return_value = 11111  # focused and in front, nothing to copy
+        result = controller.read_chat_messages("나와의 채팅")
+    assert result == {"success": True, "raw_text": "", "empty": True}
+
+
+@patch("kakao_mcp.controller.close_link_dialogs", return_value=[])
+@patch("kakao_mcp.controller.LinkGuard")
+@patch("kakao_mcp.controller.focus_child", return_value=True)
+@patch("kakao_mcp.controller.time.sleep")
+@patch("kakao_mcp.controller._empty_clipboard")
+@patch("kakao_mcp.controller.activate_window", return_value=None)
+@patch("kakao_mcp.controller._read_clipboard_text")
+@patch("kakao_mcp.controller._send_ctrl_key_combo")
+@patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
+@patch("kakao_mcp.controller.find_chat_window", return_value=11111)
+def test_read_messages_partial_copy_is_not_accepted(mock_find, mock_child, mock_ctrl, mock_clip, *rest):
+    rest[-2].return_value.check.return_value = []
+    date_only = "2026년 10월 29일 목요일\r\n"
+    full = date_only + "[나] [오후 4:49] 안녕하세요\r\n"
+    # Ctrl+C before Ctrl+A finished selecting copies only the date line
+    mock_clip.side_effect = [date_only, full, full, full]
+    with patch.object(controller, "_user32") as u32:
+        u32.GetForegroundWindow.return_value = 11111
+        result = controller.read_chat_messages("나와의 채팅")
+    assert result["raw_text"] == full
+
+
+@patch("kakao_mcp.controller.close_link_dialogs", return_value=[])
+@patch("kakao_mcp.controller.LinkGuard")
+@patch("kakao_mcp.controller.focus_child", return_value=True)
+@patch("kakao_mcp.controller.time.sleep")
+@patch("kakao_mcp.controller._empty_clipboard")
+@patch("kakao_mcp.controller.activate_window", return_value=None)
+@patch("kakao_mcp.controller._read_clipboard_text")
+@patch("kakao_mcp.controller._send_ctrl_key_combo")
+@patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
+@patch("kakao_mcp.controller.find_chat_window", return_value=11111)
+def test_read_messages_stuck_partial_selection_is_reselected(mock_find, mock_child, mock_ctrl, mock_clip, *rest):
+    rest[-2].return_value.check.return_value = []
+    first = "[나] [오후 4:49] 첫 메시지\r\n"
+    both = first + "[나] [오후 4:54] 둘째\n- 여러 줄\r\n"
+    # An early Ctrl+C leaves only the first bubble selected; copying again without
+    # a new Ctrl+A would just repeat it
+    mock_clip.side_effect = [first, both, both]
+    with patch.object(controller, "_user32") as u32:
+        u32.GetForegroundWindow.return_value = 11111
+        result = controller.read_chat_messages("나와의 채팅")
+    assert result["raw_text"] == both
+    ctrl_a = [c for c in mock_ctrl.call_args_list if c.args == (config.VK_A,)]
+    assert len(ctrl_a) == 3
+
+
+def test_link_guard_skips_window_closed_during_check():
+    with patch.object(controller, "_top_windows", side_effect=[{}, {5: (100, "")}]), \
+            patch.object(controller, "_user32"), \
+            patch.object(controller, "win32process") as proc, \
+            patch.object(controller, "win32gui") as gui, \
+            patch.object(controller, "_has_webview", return_value=False):
+        gui.FindWindow.return_value = 1
+        proc.GetWindowThreadProcessId.return_value = (0, 100)
+        gui.GetWindowRect.side_effect = Exception("invalid window handle")
+        gui.IsWindow.return_value = False
+        guard = controller.LinkGuard("test", strict=False)
+        assert guard.check() == []

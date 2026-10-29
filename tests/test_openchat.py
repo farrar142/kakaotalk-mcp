@@ -99,7 +99,7 @@ class TestCommunityDialog:
                 patch.object(openchat, "_size", return_value=(302, 365)), \
                 patch.object(openchat, "_click") as click, \
                 patch.object(openchat, "_wait_for", return_value=True):
-            openchat._answer_community(1, accept)
+            openchat._answer_dialog(1, "동의" if accept else "취소")
         return click.call_args.args
 
     def test_decline_clicks_cancel(self):
@@ -107,3 +107,33 @@ class TestCommunityDialog:
 
     def test_accept_clicks_agree(self):
         assert self._answer(True) == (1, 82, 325)
+
+
+class TestSafebotDialog:
+    LINES = [
+        {"text": "세이프봇 적용 동의", "x": 30, "y": 24, "cx": 86, "cy": 31},
+        {"text": "동의하고 참여", "x": 60, "y": 318, "cx": 92, "cy": 325},
+        {"text": "취소", "x": 206, "y": 318, "cx": 218, "cy": 325},
+    ]
+
+    def _click(self, label):
+        with patch.object(openchat, "_ocr_window", return_value=self.LINES), \
+                patch.object(openchat, "_size", return_value=(302, 365)), \
+                patch.object(openchat, "_click") as click, \
+                patch.object(openchat, "_wait_for", return_value=True):
+            openchat._answer_dialog(1, label)
+        return click.call_args.args
+
+    def test_accept_clicks_agree_and_join(self):
+        assert self._click("동의하고 참여") == (1, 92, 325)
+
+    def test_decline_clicks_cancel(self):
+        assert self._click("취소") == (1, 218, 325)
+
+    def test_dismiss_falls_back_to_wm_close(self):
+        with patch.object(openchat, "_answer_dialog", side_effect=openchat.UIError("no button")), \
+                patch.object(openchat, "_is_open", return_value=True), \
+                patch.object(openchat, "_wait_for", return_value=True), \
+                patch.object(openchat.win32gui, "PostMessage") as post:
+            openchat._dismiss(7)
+        post.assert_called_once_with(7, openchat.WM_CLOSE, 0, 0)

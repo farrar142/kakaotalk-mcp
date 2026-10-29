@@ -6,6 +6,7 @@ from typing import List, Dict
 # Regex: [Sender] [오전/오후 H:MM] Text
 MESSAGE_PATTERN = re.compile(
     r'^\[(.+?)\]\s*\[(오전|오후)\s*(\d{1,2}:\d{2})\]\s*(.*)',
+    re.DOTALL,  # a CRLF record's text can span LF lines
 )
 
 # Date separator:
@@ -15,6 +16,7 @@ DATE_SEPARATOR_PATTERN = re.compile(
     r'^-*\s*(\d{4}년\s*\d{1,2}월\s*\d{1,2}일\s*\S+요일)\s*-*$',
     re.MULTILINE,
 )
+DATE_PARTS_PATTERN = re.compile(r'(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일')
 
 # Chat header: [RoomName] [대화상대 N명] or [RoomName] [대화상대 N]
 HEADER_PATTERN = re.compile(
@@ -35,14 +37,22 @@ def parse_chat_text(raw_text: str) -> Dict:
         Dict with keys:
             - room_name: str or None
             - member_count: int or None
-            - messages: List[Dict] each with sender, time, text, is_photo, is_video, is_file, urls
+            - messages: List[Dict] each with sender, time, date, time24, text,
+              is_photo, is_video, is_file, urls. ``date`` (YYYY-MM-DD) comes from
+              the nearest date separator above and is None before the first one.
             - dates: List[str] date separators found
+            - system: List[Dict] lines without a sender (joins, leaves, notices)
+
+    KakaoTalk 26.x ends each copied record with CRLF while line breaks inside a
+    message are bare LF. When CRLF is present, records that are not messages are
+    system lines rather than continuations of the previous message.
     """
     result: Dict = {
         "room_name": None,
         "member_count": None,
         "messages": [],
         "dates": [],
+        "system": [],
     }
 
     if not raw_text or not raw_text.strip():
@@ -59,14 +69,18 @@ def parse_chat_text(raw_text: str) -> Dict:
         result["dates"].append(date_match.group(1))
 
     # Extract messages
-    lines = raw_text.split('\n')
+    records = '\r\n' in raw_text
+    lines = raw_text.split('\r\n' if records else '\n')
     current_message = None
+    current_date = None
 
     for line in lines:
         stripped = line.strip()
 
-        # Skip empty lines and date separators
-        if not stripped or DATE_SEPARATOR_PATTERN.match(stripped):
+        if not stripped:
+            continue
+        if DATE_SEPARATOR_PATTERN.match(stripped):
+            current_date = _iso_date(stripped)
             continue
 
         # Skip header line
@@ -82,8 +96,19 @@ def parse_chat_text(raw_text: str) -> Dict:
             current_message = {
                 "sender": msg_match.group(1),
                 "time": f"{msg_match.group(2)} {msg_match.group(3)}",
+                "date": current_date,
+                "time24": _time24(msg_match.group(2), msg_match.group(3)),
                 "text": msg_match.group(4),
             }
+            if records:
+                # The text of one record may span LF-separated lines
+                current_message["text"] = "\n".join(
+                    ln.strip() for ln in current_message["text"].split("\n")).strip()
+        elif records:
+            if current_message is not None:
+                _finalize_message(current_message, result["messages"])
+                current_message = None
+            result["system"].append({"date": current_date, "text": stripped})
         elif current_message is not None and stripped:
             # Continuation line of previous message
             current_message["text"] += "\n" + stripped
@@ -93,6 +118,18 @@ def parse_chat_text(raw_text: str) -> Dict:
         _finalize_message(current_message, result["messages"])
 
     return result
+
+
+def _iso_date(separator: str):
+    m = DATE_PARTS_PATTERN.search(separator)
+    return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else None
+
+
+def _time24(ampm: str, hm: str) -> str:
+    """('오후', '2:05') -> '14:05'; 12시 is noon (오후) or midnight (오전)."""
+    h, m = hm.split(":")
+    h = int(h) % 12 + (12 if ampm == "오후" else 0)
+    return f"{h:02d}:{m}"
 
 
 def _finalize_message(msg: Dict, messages_list: List[Dict]):
