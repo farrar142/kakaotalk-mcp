@@ -200,15 +200,9 @@ class LinkGuard:
         return bool(main) and win32gui.GetWindow(hwnd, win32con.GW_OWNER) == main and r[3] - r[1] <= 120
 
     def _close(self, hwnd: int, what: str) -> str:
+        # WM_CLOSE also answers 취소 on KakaoTalk dialogs such as "외부 링크로 이동"
         self.closed.append(hwnd)
-        if self.strict and not _has_webview(hwnd) and not win32gui.GetWindowText(hwnd):
-            from .openchat import _dismiss  # a dialog such as "외부 링크로 이동": answer 취소
-            try:
-                _dismiss(hwnd)
-            except Exception:
-                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-        else:
-            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+        win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
         return self._log_event(f"closed {what}")
 
     def _log_event(self, text: str) -> str:
@@ -218,28 +212,43 @@ class LinkGuard:
         return msg
 
 
+def is_link_confirmation(hwnd: int, owner: Optional[int] = None) -> bool:
+    """The link confirmation ("주의 … 이 링크에 연결할까요? 연결하기 / 취소"), told by its shape:
+    an untitled KakaoTalk dialog of a fixed size (scaled by the window's DPI), owned by
+    ``owner`` when given. No screenshot or OCR, so it works behind other windows."""
+    if win32gui.GetWindowText(hwnd) or win32gui.GetClassName(hwnd) != config.KAKAO_CHAT_WINDOW_CLASS:
+        return False
+    if owner is not None and win32gui.GetWindow(hwnd, win32con.GW_OWNER) != owner:
+        return False
+    try:
+        scale = (_user32.GetDpiForWindow(hwnd) or 96) / 96
+    except Exception:
+        scale = 1.0
+    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    w, h = config.LINK_DIALOG_SIZE
+    tol = config.LINK_DIALOG_SIZE_TOLERANCE * scale
+    return abs(right - left - w * scale) <= tol and abs(bottom - top - h * scale) <= tol
+
+
 def close_link_dialogs(room_hwnd: int) -> List[str]:
-    """Answer "취소" on link confirmations ("주의 … 이 링크에 연결할까요? 연결하기 / 취소")
-    left over the room. They are modal, so the room ignores input until closed."""
-    from . import ocr
-    from .openchat import _answer_dialog, _owner
+    """Cancel link confirmations left over the room (WM_CLOSE = 취소).
+    They are modal, so the room ignores input until they are closed."""
     closed: List[str] = []
-    for hwnd, (_, title) in _top_windows().items():
-        if title or _owner(hwnd) != room_hwnd:
-            continue
-        r = win32gui.GetWindowRect(hwnd)
-        if r[3] - r[1] > 400:
-            continue
+    for hwnd in _top_windows():
         try:
-            text = ocr.normalize(" ".join(ln["text"] for ln in ocr.recognize(ocr.grab_window(hwnd))))
-            if ocr.normalize("링크") in text and ocr.normalize("연결하기") in text:
-                _answer_dialog(hwnd, "취소")
-                msg = f"declined a leftover link confirmation over '{win32gui.GetWindowText(room_hwnd)}'"
-                LINK_EVENTS.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "event": msg})
-                _log(f"LinkGuard: {msg}")
-                closed.append(msg)
+            if not is_link_confirmation(hwnd, owner=room_hwnd):
+                continue
+            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+            end = time.time() + 3
+            while time.time() < end and win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd):
+                time.sleep(0.1)
+            msg = f"declined a leftover link confirmation over '{win32gui.GetWindowText(room_hwnd)}'"
+            LINK_EVENTS.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "event": msg})
+            _log(f"LinkGuard: {msg}")
+            closed.append(msg)
         except Exception as e:
-            _log(f"LinkGuard: could not check dialog {hwnd:#x}: {e}")
+            if win32gui.IsWindow(hwnd):
+                _log(f"LinkGuard: could not check dialog {hwnd:#x}: {e}")
     return closed
 
 

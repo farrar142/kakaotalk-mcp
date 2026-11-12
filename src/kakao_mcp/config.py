@@ -48,6 +48,10 @@ BACKGROUND_READ_ATTEMPTS = 4  # copies until two agree (a long selection may fin
 BACKGROUND_CLICK_ATTEMPTS = 4  # posted clicks are now and then ignored; checked and retried
 BACKGROUND_CLICK_RETRY_SEC = 1.5
 
+# Link confirmation ("주의 … 이 링크에 연결할까요?"): untitled EVA_Window_Dblclk owned by the room
+LINK_DIALOG_SIZE = (260, 178)  # at 100% display scale
+LINK_DIALOG_SIZE_TOLERANCE = 6  # px
+
 # Window and focus timing
 WINDOW_ACTIVATE_WAIT_SEC = 0.15  # Was 0.2 — after bring_window_to_front
 EDIT_CLICK_WAIT_SEC = 0.08  # Was 0.1 — after clicking edit control

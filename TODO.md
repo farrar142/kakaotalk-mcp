@@ -22,7 +22,7 @@ OCR(Windows.Media.Ocr)은 느리고(창마다 수백 ms), 화면 배율·테마�
   - 다른 점: 아래 광고(Chromium) 영역은 찍히지 않음 — 광고 글자는 필요 없음
   - 찍는 시간: 자식 창 18ms, 메인 창 64ms
   - 최소화된 창은 여전히 안 됨(160x28 제목 막대만) → 필요하면 `SW_SHOWNOACTIVATE`로 되살린 뒤 찍기
-  - 톡게시판은 앞으로 오지 않게 됨. 오픈채팅(`_ocr_window(focus=True)`)과 `close_link_dialogs` 뒤의 클릭은 아직 창을 앞으로 가져옴
+  - 톡게시판은 앞으로 오지 않게 됨. 오픈채팅(`_ocr_window(focus=True)`) 뒤의 클릭은 아직 창을 앞으로 가져옴
 - [x] **포커스 없이 클릭** — `openchat._post_click` / `_post_wheel`(2026-11-12)
   - 클릭 지점 아래 가장 안쪽 자식 창(`ChildWindowFromPointEx`)에 `WM_MOUSEMOVE` → 0.15s → `WM_LBUTTONDOWN` → `WM_LBUTTONUP`. 더블클릭은 이어서 `WM_LBUTTONDBLCLK`·`UP`
   - 된 곳: 메인 창 탭, 방 ≡ 메뉴 버튼, 메뉴 항목, 게시판 탭·뒤로가기, 게시판 글 더블클릭(목록 자식 창 `EVA_ChildWindow_Dblclk`에 보내야 함)
@@ -40,8 +40,11 @@ OCR(Windows.Media.Ocr)은 느리고(창마다 수백 ms), 화면 배율·테마�
 
 ### 메시지 읽기·기록 (가장 먼저 — 5분마다 도는 기록에 걸림)
 
-- [ ] `controller.py:221` `close_link_dialogs` — 방 위에 남은 링크 확인창 찾기('링크'·'연결하기') → '취소'
-  - 후보: **W**(소유자가 방인 무제목 `EVA_Window_Dblclk`, 260x178 등 크기) + **I**(경고 아이콘) → **K**(`WM_CLOSE`=취소)
+- [x] `close_link_dialogs` — 방 위에 남은 링크 확인창 → **W** + **K**(2026-11-12)
+  - `controller.is_link_confirmation`: 제목 없는 `EVA_Window_Dblclk`, 소유자가 그 방, 크기 260x178(±6px, `GetDpiForWindow`로 배율 환산) → `WM_CLOSE`(=취소)
+  - `LinkGuard`가 작업 중 새로 뜬 카톡 창을 닫을 때도 OCR '취소' 대신 `WM_CLOSE`
+  - 이 PC 실제 창(메인·방 3개·광고 390x100)에는 오판 없음. **실제 링크 확인창으로는 아직 시험 안 함**
+  - 확인창을 띄워 보려다 실패(2026-11-12, 김한얼 방): `https://example.com`과 `http://192.0.2.1`은 둘 다 확인창 없이 바로 브라우저로 열림(Chrome 번역 팝업 282x101도 오판 없음). 어떤 링크에 "주의"가 뜨는지 알아내면 크기를 실제로 재 본다
 
 ### 톡게시판 — `board.py` (`kakao_read_board`)
 

@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 실패하면 예전의 포그라운드 복사로 넘어간다. `config.BACKGROUND_READ`로 끌 수 있다
 - OCR 화면 찍기(`ocr.grab_window`)가 `PrintWindow`로 창을 직접 그려 받는다 — 다른 창에 가려져 있어도 찍힘(최소화된 창은 예전처럼 화면 픽셀)
 - 톡게시판 읽기(`kakao_read_board`)가 창을 앞으로 가져오지 않는다 — 클릭·휠을 창에 직접 보내고(`PostMessage`), 메뉴의 '톡게시판'은 고정 위치로, 상세보기 판단은 자식 창으로 한다(OCR 2곳 제거)
+- 방 위에 남은 링크 확인창을 OCR 없이 창 모양(제목 없음·방 소유·260x178, 배율 환산)으로 알아보고 `WM_CLOSE`(=취소)로 닫는다 — 창을 앞으로 가져오지 않음. `LinkGuard`가 닫는 카톡 대화상자도 `WM_CLOSE`로
 - `kakao_openchat_join`의 `accept_safebot` — "세이프봇 적용 동의" 창을 "동의하고 참여"로 넘김 (기본은 "취소" 후 중단)
 
 ### Changed

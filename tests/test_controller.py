@@ -634,3 +634,48 @@ def test_background_read_gives_up_when_nothing_is_copied(mock_copy, mock_save, m
     assert controller._read_background(33333) == ""
     mock_copy.assert_called_once()
     mock_restore.assert_called_once_with([])
+
+
+class TestLinkConfirmation:
+    """Leftover link confirmations are told by shape (no OCR) and closed with WM_CLOSE."""
+    ROOM = 11
+
+    def _windows(self, wins, dpi=96, room_title="방"):
+        """wins: {hwnd: (title, cls, owner, (w, h))}"""
+        gui = patch.object(controller, "win32gui").start()
+        u32 = patch.object(controller, "_user32").start()
+        patch.object(controller.time, "sleep").start()
+        gui.GetWindowText.side_effect = lambda h: room_title if h == self.ROOM else wins[h][0]
+        gui.GetClassName.side_effect = lambda h: wins[h][1]
+        gui.GetWindow.side_effect = lambda h, _: wins[h][2]
+        gui.GetWindowRect.side_effect = lambda h: (10, 20, 10 + wins[h][3][0], 20 + wins[h][3][1])
+        gui.IsWindow.return_value = True
+        gui.IsWindowVisible.return_value = False
+        u32.GetDpiForWindow.return_value = dpi
+        patch.object(controller, "_top_windows", return_value={h: (1, wins[h][0]) for h in wins}).start()
+        return gui
+
+    def teardown_method(self):
+        patch.stopall()
+
+    def test_matching_dialog_is_closed(self):
+        gui = self._windows({5: ("", "EVA_Window_Dblclk", self.ROOM, (260, 178))})
+        closed = controller.close_link_dialogs(self.ROOM)
+        assert len(closed) == 1 and "'방'" in closed[0]
+        gui.PostMessage.assert_called_once_with(5, controller.win32con.WM_CLOSE, 0, 0)
+
+    def test_other_windows_are_left_alone(self):
+        gui = self._windows({
+            5: ("", "EVA_Window_Dblclk", 99, (260, 178)),        # another room's dialog
+            6: ("방", "EVA_Window_Dblclk", self.ROOM, (260, 178)),  # titled
+            7: ("", "EVA_Menu", self.ROOM, (260, 178)),           # the room menu
+            8: ("", "EVA_Window_Dblclk", self.ROOM, (360, 230)),  # a different dialog
+        })
+        assert controller.close_link_dialogs(self.ROOM) == []
+        assert not gui.PostMessage.called
+
+    def test_size_follows_display_scale(self):
+        self._windows({5: ("", "EVA_Window_Dblclk", self.ROOM, (390, 267))}, dpi=144)
+        assert controller.is_link_confirmation(5, owner=self.ROOM)
+        self._windows({5: ("", "EVA_Window_Dblclk", self.ROOM, (390, 267))}, dpi=96)
+        assert not controller.is_link_confirmation(5, owner=self.ROOM)
