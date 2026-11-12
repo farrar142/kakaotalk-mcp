@@ -126,15 +126,22 @@ BOARD_SCROLL_NOTCHES = 3
 BOARD_NAV_WAIT_SEC = 0.8
 
 # Chat room ≡ menu (EVA_Menu) layouts, told apart by the menu's size at 100% scale:
-# entry -> its row center in px above the menu's bottom edge. Measured on KakaoTalk
-# PC 26.9 with posted Down keys. A menu of any other size is not used.
+# entry -> its row center in px above the menu's bottom edge, or a tuple of candidate
+# rows when menus of that size differ (told apart by ROOM_MENU_ENTRY_TEMPLATES).
+# Measured on KakaoTalk PC 26.9 with posted Down keys. A menu of any other size is not used.
 ROOM_MENU_LAYOUTS = {
     (225, 298): {"톡게시판": 189, "채팅방 나가기": 52},  # 1:1 room (8 entries)
     (225, 324): {"톡게시판": 189, "채팅방 나가기": 52},  # group room (+ "채팅방 다시 만들기" on top)
-    # open chat as its owner (9 entries + icon bar): URL 복사 / 서랍 / 톡게시판 / 입장·퇴장 표시 /
-    # 오픈채팅 관리 / 커버 보기 / 챗봇 / 대화 내용 / 나가기
-    (179, 335): {"채팅방 URL 복사": 315, "톡게시판": 252, "채팅방 나가기": 52},
+    # open chat, 9 entries + an icon bar. Owner: URL 복사 315 / 서랍 278 / 톡게시판 252 /
+    # 입장·퇴장 표시 215 / 오픈채팅 관리 189 / 커버 보기 163 / 챗봇 126 / 대화 내용 89 / 나가기 52.
+    # Member: ... 215 / 커버 보기 189 / 챗봇 152 / 대화 내용 115 / 나가기 78 / 신고하고 나가기 52
+    (179, 335): {"채팅방 URL 복사": 315, "톡게시판": 252, "채팅방 나가기": (52, 78)},
+    # open chat with a reduced menu (member): 입장·퇴장 표시(disabled) / 커버 보기 152 /
+    # 대화 내용 115 / 나가기 78 / 신고하고 나가기 52
+    (179, 198): {"채팅방 나가기": 78},
 }
+# Entries whose row label is checked before Enter; with candidates, exactly one must match
+ROOM_MENU_ENTRY_TEMPLATES = {"채팅방 나가기": "menu_leave"}
 ROOM_MENU_SIZE_TOLERANCE = 4
 
 # Default output directory for downloaded images

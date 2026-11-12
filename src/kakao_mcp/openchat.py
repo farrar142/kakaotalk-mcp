@@ -858,7 +858,7 @@ def leave_room(room_name: str) -> Dict:
     """Leave a chat room (open chat or regular) via its menu, confirming the dialog."""
     room = controller.find_chat_window(room_name)
     try:
-        menu = _open_room_menu(room_name)
+        menu = _open_room_menu(room_name, background=True)
     except EmptyRoomMenu as e:
         # Nothing to leave; close the leftover window so it stops showing up as open
         win32gui.PostMessage(room, WM_CLOSE, 0, 0)
@@ -866,7 +866,11 @@ def leave_room(room_name: str) -> Dict:
         return {"success": True, "was_member": False, "window_closed": bool(closed),
                 "message": f"{e}; closed its window instead of leaving"}
     before = _kakao_windows()
-    _click_menu_item(menu, "채팅방 나가기", exclude=["신고"])
+    w, h = _size(menu)
+    # Never by position alone: in a member's open chat menu the row where the owner has
+    # "채팅방 나가기" is "신고하고 나가기"; the label template decides
+    if not room_menu_select(menu, "채팅방 나가기"):
+        raise UIError(f"'채팅방 나가기' not found in the ≡ menu of '{room_name}' ({w}x{h}); nothing pressed")
     dialog = _wait_new_window(before, lambda h: win32gui.GetClassName(h) != "EVA_Menu", timeout=4)
     if not dialog:
         raise UIError("Leave confirmation dialog did not appear")

@@ -245,3 +245,21 @@ class TestGetRoomLink:
     def test_menu_without_the_entry(self):
         result, _, _ = self._link(False)
         assert not result["success"] and "225x298" in result["error"]
+
+
+class TestLeaveMenu:
+    def test_nothing_pressed_when_the_leave_row_is_not_recognised(self):
+        with patch.object(openchat.controller, "find_chat_window", return_value=1), \
+                patch.object(openchat, "_open_room_menu", return_value=7) as menu, \
+                patch.object(openchat, "_kakao_windows", return_value=set()), \
+                patch.object(openchat, "_size", return_value=(179, 335)), \
+                patch.object(openchat, "room_menu_select", return_value=False) as select, \
+                patch.object(openchat, "_click") as click:
+            try:
+                openchat.leave_room("room")
+                raise AssertionError("expected UIError")
+            except openchat.UIError as e:
+                assert "nothing pressed" in str(e)
+        select.assert_called_once_with(7, "채팅방 나가기")
+        menu.assert_called_once_with("room", background=True)
+        click.assert_not_called()

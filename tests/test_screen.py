@@ -101,3 +101,26 @@ def test_room_menu_select_closes_unknown_menu():
         assert screen.room_menu_select(7, "톡게시판") is False
     select.assert_not_called()
     close.assert_called_once()
+
+
+def _row_with_labels(size, entry, leave_rows):
+    """room_menu_row where the "채팅방 나가기" label shows on ``leave_rows``."""
+    w, h = size
+    with patch.object(screen.win32gui, "GetWindowRect", return_value=(0, 0, w, h)), \
+            patch.object(screen, "dpi_scale", return_value=1.0), \
+            patch.object(screen.ocr, "grab_window"), \
+            patch("kakao_mcp.templates.row_matches", side_effect=lambda s, n, fb, sc: fb in leave_rows):
+        return screen.room_menu_row(7, entry)
+
+
+def test_open_chat_leave_row_is_told_apart_by_its_label():
+    # owner: 나가기 at 52; member: 나가기 at 78 and 52 is "신고하고 나가기"
+    assert _row_with_labels((179, 335), "채팅방 나가기", {52}) == 52
+    assert _row_with_labels((179, 335), "채팅방 나가기", {78}) == 78
+
+
+def test_leave_row_not_used_without_exactly_one_label():
+    assert _row_with_labels((179, 335), "채팅방 나가기", set()) is None
+    assert _row_with_labels((179, 335), "채팅방 나가기", {52, 78}) is None
+    assert _row_with_labels((225, 298), "채팅방 나가기", set()) is None  # even with one fixed row
+    assert _row_with_labels((225, 298), "채팅방 나가기", {52}) == 52

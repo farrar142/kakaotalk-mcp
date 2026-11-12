@@ -11,7 +11,7 @@ display scale itself. New templates: ``python scripts/capture_template.py``.
 """
 import functools
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from PIL import Image, ImageChops
 
@@ -24,6 +24,11 @@ POSITIONS: Dict[str, Tuple[int, int]] = {
     "link_warning": (24, 27),  # "주의" heading of the link confirmation (262x182)
 }
 
+# Menu row labels: name -> (x, y offset from the row's center), at 100% scale
+ROW_LABELS: Dict[str, Tuple[int, int]] = {
+    "menu_leave": (38, -8),  # "채팅방 나가기" (not "신고하고 나가기")
+}
+
 
 def _ink(img: Image.Image) -> Image.Image:
     return img.convert("L").point(lambda v: 255 if v < config.TEMPLATE_INK_LUMA else 0)
@@ -34,8 +39,10 @@ def _load(name: str) -> Image.Image:
     return _ink(Image.open(DIR / f"{name}.png"))
 
 
-def score(shot: Image.Image, name: str, scale: float = 1.0) -> float:
-    """Best (lowest) ink mismatch of template ``name`` around its spot in ``shot``.
+def score(shot: Image.Image, name: str, scale: float = 1.0,
+          at: Optional[Tuple[float, float]] = None) -> float:
+    """Best (lowest) ink mismatch of template ``name`` around its spot in ``shot``
+    (``POSITIONS[name]``, or ``at``: top-left at 100% scale).
 
     At other display scales the spot is cut at its scaled size and shrunk back to
     100% before comparing, which keeps strokes as thick as in the template.
@@ -45,7 +52,7 @@ def score(shot: Image.Image, name: str, scale: float = 1.0) -> float:
     if not ink:
         raise ValueError(f"template {name!r} has no ink")
     w, h = round(tpl.width * scale), round(tpl.height * scale)
-    x0, y0 = (round(v * scale) for v in POSITIONS[name])
+    x0, y0 = (round(v * scale) for v in (at or POSITIONS[name]))
     shift = round(config.TEMPLATE_MAX_SHIFT * scale)
     best = 1.0
     for dy in range(-shift, shift + 1):
@@ -64,6 +71,14 @@ def score(shot: Image.Image, name: str, scale: float = 1.0) -> float:
 def matches(shot: Image.Image, name: str, scale: float = 1.0) -> bool:
     """``shot`` (taken at ``scale``) shows template ``name`` at its spot."""
     return score(shot, name, scale) <= config.TEMPLATE_MAX_MISMATCH
+
+
+def row_matches(shot: Image.Image, name: str, from_bottom: float, scale: float = 1.0) -> bool:
+    """The menu row centered ``from_bottom`` px (100% scale) above the bottom of ``shot``
+    shows the label template ``name`` (``ROW_LABELS``)."""
+    x, dy = ROW_LABELS[name]
+    at = (x, shot.height / scale - from_bottom + dy)
+    return score(shot, name, scale, at=at) <= config.TEMPLATE_MAX_MISMATCH
 
 
 def window_matches(hwnd: int, name: str) -> bool:

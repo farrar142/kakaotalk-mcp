@@ -46,3 +46,16 @@ def test_window_matches_uses_the_window_shot_and_scale():
             patch.object(screen, "dpi_scale", return_value=1.5):
         assert templates.window_matches(5, NAME)
     grab.assert_called_once_with(5)
+
+
+def test_row_label_found_only_on_its_row():
+    """The "채팅방 나가기" label pasted on the row 52 px above the bottom of a blank menu."""
+    from PIL import Image as _Image
+    label = _Image.open(templates.DIR / "menu_leave.png")
+    menu = _Image.new("L", (179, 335), 255)
+    x, dy = templates.ROW_LABELS["menu_leave"]
+    menu.paste(label, (x, 335 - 52 + dy))
+    assert templates.row_matches(menu, "menu_leave", 52)
+    assert not templates.row_matches(menu, "menu_leave", 78)
+    scaled = menu.resize((round(179 * 1.5), round(335 * 1.5)), _Image.LANCZOS)
+    assert templates.row_matches(scaled, "menu_leave", 52, scale=1.5)

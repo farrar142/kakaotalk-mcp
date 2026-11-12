@@ -48,15 +48,26 @@ def highlighted_band(base, img) -> Optional[Tuple[int, int]]:
 
 def room_menu_row(menu: int, entry: str) -> Optional[float]:
     """Distance (100% scale) of ``entry`` above the bottom of a chat room ≡ menu, or
-    None when the menu's size matches no known layout or the layout lacks the entry."""
+    None when the menu's size matches no known layout, the layout lacks the entry, or
+    the entry's label template (``ROOM_MENU_ENTRY_TEMPLATES``) is not on exactly one
+    candidate row."""
     left, top, right, bottom = win32gui.GetWindowRect(menu)
     scale = dpi_scale(menu)
     w, h = (right - left) / scale, (bottom - top) / scale
     tol = config.ROOM_MENU_SIZE_TOLERANCE
-    for (lw, lh), rows in config.ROOM_MENU_LAYOUTS.items():
-        if abs(w - lw) <= tol and abs(h - lh) <= tol:
-            return rows.get(entry)
-    return None
+    rows = next((r for (lw, lh), r in config.ROOM_MENU_LAYOUTS.items()
+                 if abs(w - lw) <= tol and abs(h - lh) <= tol), None)
+    row = rows.get(entry) if rows else None
+    if row is None:
+        return None
+    candidates = row if isinstance(row, tuple) else (row,)
+    name = config.ROOM_MENU_ENTRY_TEMPLATES.get(entry)
+    if not name:
+        return candidates[0] if len(candidates) == 1 else None
+    from . import templates
+    shot = ocr.grab_window(menu)
+    hits = [c for c in candidates if templates.row_matches(shot, name, c, scale)]
+    return hits[0] if len(hits) == 1 else None
 
 
 def room_menu_select(menu: int, entry: str) -> bool:
