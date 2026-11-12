@@ -116,4 +116,4 @@ OCR(Windows.Media.Ocr)은 느리고(창마다 수백 ms), 화면 배율·테마�
 - 버튼·메뉴·목록 항목은 자기 HWND가 없다(한 창 안에 그려짐). `LB_GETCOUNT`·`LVM_GETITEMCOUNT`·`MN_GETHMENU`는 0을 돌려준다
 - Win32로 쓸 수 있는 것: 컨트롤 ID(오픈채팅 검색 Edit 100, 결과 영역 103 등), `WM_GETTEXT`가 주는 내부 이름(`ChatRoomListCtrl_`, `SearchListCtrl_`, `ContactListCtrl_` …)
 - 확인창은 제목 없는 `EVA_Window_Dblclk`(260x178), `WM_CLOSE`를 보내면 취소된다
-- kakaomcp PC에는 커밋 안 된 OCR 코드가 더 있다(`_is_link_confirmation`, `LinkGuard._check_window`, 오픈채팅 속도 제한 문구) — 그쪽이 커밋되면 이 목록에 더한다
+- kakaomcp PC의 OCR 코드(`_is_link_confirmation`, `LinkGuard._check_window`, 오픈채팅 속도 제한 문구)는 eeb1cfc로 합쳐짐. 전체 과정은 `docs/background-ui-transition.md`
