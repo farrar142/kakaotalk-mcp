@@ -485,14 +485,24 @@ def kakao_read_board(room_name: str, tab: str = "공지", max_posts: int = 10, i
 # ---------------------------------------------------------------------------
 
 def _openchat_call(fn, *args, **kwargs) -> Dict:
+    """Run an open chat operation; KakaoTalk's 이용자보호조치 limit comes back as
+    ``error_code: "rate_limited"`` with ``dialog_text`` and ``dialog_closed``."""
     try:
         if not controller.is_kakaotalk_running()["running"]:
             return {"error": "KakaoTalk is not running"}
-        result = fn(*args, **kwargs)
+        before = openchat._kakao_windows()
+        try:
+            result = fn(*args, **kwargs)
+        finally:
+            # The limit dialog can follow any open chat action (join, search, ...)
+            openchat.check_rate_limit(before)
         if result.get("success"):
             result.pop("success")
             return result
         return {"error": result.get("error", "Unknown error")}
+    except openchat.RateLimited as e:
+        return {"error_code": "rate_limited", "error": str(e),
+                "dialog_text": e.dialog_text, "dialog_closed": e.dialog_closed}
     except openchat.UIError as e:
         return {"error": str(e)}
     except Exception as e:
@@ -548,6 +558,11 @@ def kakao_openchat_join(
         accept_safebot: Rooms with SafeBot ask to agree to 세이프봇 적용 동의
             (messages may be hidden under Kakao's policy). Only set True when
             the user agreed; otherwise it is declined like accept_community.
+
+    When KakaoTalk limits joining (이용자보호조치: too many rooms joined in a
+    short time) the result is {"error_code": "rate_limited", "error",
+    "dialog_text", "dialog_closed"}; wait before trying again. The other open
+    chat tools report the same way if the dialog appears.
     """
     return _openchat_call(
         openchat.join_openchat, query, title=title, index=index, profile=profile, passcode=passcode,
@@ -592,6 +607,9 @@ def kakao_leave_room(room_name: str, confirm: bool = False) -> Dict:
     Args:
         room_name: Exact title of the chat room window.
         confirm: Must be true to actually leave (safety guard).
+
+    A window left over from a join that never completed (the room is not
+    in the chat list; its menu is empty) is just closed: was_member=false.
     """
     if not confirm:
         return {"error": f"Refusing to leave '{room_name}' without confirm=true"}

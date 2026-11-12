@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 날짜·기간·키워드·보낸 사람·최근 N건 검색
   - `kakao_read_messages`와 키워드 모니터가 읽은 메시지도 저장
 - `kakao_read_board` — 톡게시판(공지 / 일정 / 투표 / 퀴즈) 글 목록과 본문 읽기
+- 오픈채팅 도구가 카카오 「이용자보호조치」(짧은 시간에 여러 방 참여) 제한 창을 따로 알려 줌: `error_code: "rate_limited"`, `dialog_text`, `dialog_closed`. 창은 「닫기」로 닫음
 - 백그라운드 읽기: 메시지 읽기가 채팅방 창을 앞으로 가져오지 않는다(최소화된 창도 읽음)
   - Ctrl+A/C를 메시지 목록에 `PostMessage`로 직접 보내고, Ctrl은 카카오톡 입력 스레드의 키보드 상태로 눌러 둔다
   - 정해진 대기 대신 클립보드 시퀀스 번호가 바뀌는 순간 읽는다
@@ -27,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kakao_openchat_join`의 `accept_safebot` — "세이프봇 적용 동의" 창을 "동의하고 참여"로 넘김 (기본은 "취소" 후 중단)
 
 ### Changed
+- `kakao_leave_room`이 참여가 끝나지 않은 방(채팅 목록에 없고 ≡ 메뉴가 빈 방)에서 `Invalid width or height`로 실패하던 문제: 창만 닫고 `was_member: false`로 알려 줌. 일반 퇴장은 `was_member: true`. `kakao_get_room_link`도 같은 경우 원인을 알려 줌
 - 메시지에 `date`(YYYY-MM-DD)와 `time24`(HH:MM) 추가. 카카오톡 26.x 복사 형식(레코드는 CRLF, 메시지 안 줄바꿈은 LF)을 구분해
   입장/퇴장 같은 시스템 줄이 앞 메시지 본문에 붙지 않고 `system`으로 분리됨
 - 모든 UI 조작 도구와 백그라운드 수집이 하나의 잠금(`UI_LOCK`)을 공유

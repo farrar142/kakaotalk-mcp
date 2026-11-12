@@ -326,15 +326,26 @@ class TestLinkGuard:
     def test_new_kakao_webview_is_closed(self):
         before = {1: (self.KAKAO, "카카오톡")}
         events, post, _, _ = self._guard(before, {**before, 7: (self.KAKAO, "")}, fg=7, webview={7})
-        assert "KakaoTalk window" in events[0]
+        assert "KakaoTalk web view" in events[0]
         post.assert_called_once_with(7, controller.win32con.WM_CLOSE, 0, 0)
 
-    def test_new_kakao_dialog_only_counts_when_strict(self):
+    def test_kakao_own_windows_are_left_alone_even_when_strict(self):
+        # KakaoTalkShadowWnd and untitled helpers appear when a room is first activated
         before = {1: (self.KAKAO, "카카오톡")}
-        after = {**before, 7: (self.KAKAO, "방 이름")}
-        assert self._guard(before, after, fg=7)[0] == []
-        events, post, _, _ = self._guard(before, after, fg=7, strict=True)
-        assert len(events) == 1
+        after = {**before, 7: (self.KAKAO, "KakaoTalkShadowWnd"), 8: (self.KAKAO, "")}
+        with patch.object(controller, "is_link_confirmation", return_value=False):
+            events, post, _, _ = self._guard(before, after, fg=1, strict=True)
+        assert events == [] and not post.called
+
+    def test_link_confirmation_is_declined_when_strict(self):
+        before = {1: (self.KAKAO, "카카오톡")}
+        after = {**before, 8: (self.KAKAO, "")}
+        with patch.object(controller, "is_link_confirmation", side_effect=lambda h: h == 8):
+            events, post, _, _ = self._guard(before, after, fg=8, strict=True)
+            assert len(events) == 1 and "link confirmation" in events[0]
+            post.assert_called_once_with(8, controller.win32con.WM_CLOSE, 0, 0)
+        with patch.object(controller, "is_link_confirmation", return_value=True):
+            assert self._guard(before, after, fg=8, strict=False)[0] == []  # only while reading
 
 
 @patch("kakao_mcp.controller._send_ctrl_key_combo")

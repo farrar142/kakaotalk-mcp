@@ -14,8 +14,13 @@ Flows were mapped against KakaoTalk PC 26.9 (Windows, 100% display scale):
   show a modal "커뮤니티 시작하기" consent dialog over the preview (messages
   are public and searchable, kept 90 days; "동의" / "취소"). Rooms with
   SafeBot show an untitled "세이프봇 적용 동의" dialog ("동의하고 참여" / "취소").
+- Joining many rooms in a short time gets the account limited: an untitled
+  "이용자보호조치로 인해 빠른 시간 내에 다수의 오픈채팅방에 참여할 수 없도록
+  제한되었습니다. 잠시 후 다시 시도해 주세요." dialog ("닫기" / "자세히 보기").
 - A chat room window's ≡ menu is an ``EVA_Menu`` popup with "채팅방 URL 복사",
   "채팅방 나가기", ...; leaving asks for confirmation ("나가기" / "취소").
+- A room window left over from a join that never completed (the room is not
+  in the chat list) opens its ≡ menu as an empty, zero-size ``EVA_Menu``.
 - "+ 만들기" opens "오픈채팅 만들기" with a name ``Edit``, a description
   ``RICHEDIT50W``, topic chips and participation options.
 
@@ -68,6 +73,54 @@ SEPARATOR_RGB = (237, 237, 237)
 
 class UIError(Exception):
     """A KakaoTalk UI step failed (window missing, unexpected dialog, ...)."""
+
+
+class EmptyRoomMenu(UIError):
+    """The room's ≡ menu opened with no items: KakaoTalk does not count us as a member."""
+
+
+class RateLimited(UIError):
+    """KakaoTalk's 이용자보호조치 dialog: too many open chats joined in a short time."""
+
+    def __init__(self, dialog_text: str, dialog_closed: bool):
+        super().__init__("KakaoTalk limited joining open chats for now (이용자보호조치: too many rooms "
+                         f"joined in a short time); try again later. Dialog: {dialog_text}")
+        self.dialog_text = dialog_text
+        self.dialog_closed = dialog_closed
+
+
+# OCR garbles this dialog ("이용자보호조지로", "으픈재팅방"), so it is recognised
+# by fragments; two of them must be present
+RATE_LIMIT_MARKERS = ("보호조", "제한", "잠시후", "다수의", "빠른시간")
+
+
+def is_rate_limit_text(text: str) -> bool:
+    t = ocr.normalize(text)
+    return sum(ocr.normalize(m) in t for m in RATE_LIMIT_MARKERS) >= 2
+
+
+def _close_rate_limit(dialog: int, text: str) -> "RateLimited":
+    """Press "닫기" on the 이용자보호조치 dialog (WM_CLOSE if that fails)."""
+    try:
+        _answer_dialog(dialog, "닫기")
+    except Exception:
+        if _is_open(dialog):
+            win32gui.PostMessage(dialog, WM_CLOSE, 0, 0)
+            _wait_for(lambda: None if _is_open(dialog) else True, 2)
+    return RateLimited(text, dialog_closed=not _is_open(dialog))
+
+
+def check_rate_limit(before: Set[int]):
+    """Raise RateLimited if an 이용자보호조치 dialog appeared since ``before`` (closing it)."""
+    for h in _kakao_windows() - before:
+        if win32gui.GetWindowText(h) or win32gui.GetClassName(h) != config.KAKAO_CHAT_WINDOW_CLASS:
+            continue
+        w, h_ = _size(h)
+        if h_ > 400 or w > 500:
+            continue
+        text = _ocr_text(h)
+        if is_rate_limit_text(text):
+            raise _close_rate_limit(h, text)
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +357,7 @@ def _ocr_window(hwnd: int, focus: bool = True) -> List[Dict]:
 
 def _ocr_text(hwnd: int) -> str:
     try:
-        return " / ".join(ln["text"] for ln in _ocr_window(hwnd))
+        return " / ".join(ln["text"] for ln in _ocr_window(hwnd, focus=False))
     except Exception as e:  # diagnostics only
         return f"<ocr failed: {e}>"
 
@@ -633,6 +686,8 @@ def _answer_join_dialogs(preview: int, before: Set[int], handled: Set[int], room
             else:
                 time.sleep(0.4)
                 text = _ocr_text(dialog)
+                if is_rate_limit_text(text):
+                    raise _close_rate_limit(dialog, text)
                 if ocr.normalize("세이프봇") in ocr.normalize(text):
                     _answer_dialog(dialog, "동의하고 참여" if accept_safebot else "취소")
                     handled.add(dialog)
@@ -763,6 +818,11 @@ def _open_room_menu(room_name: str, background: bool = False) -> int:
     if not menu:
         raise UIError("Chat room menu did not open")
     time.sleep(0.3)
+    if 0 in _size(menu):
+        # Escape would reach the room window (the empty menu takes no focus) and close it
+        win32gui.PostMessage(menu, WM_CLOSE, 0, 0)
+        raise EmptyRoomMenu(f"The menu of '{room_name}' is empty: the room is not in the chat list "
+                            "(a join that never completed)")
     return menu
 
 
@@ -794,7 +854,14 @@ def get_room_link(room_name: str) -> Dict:
 def leave_room(room_name: str) -> Dict:
     """Leave a chat room (open chat or regular) via its menu, confirming the dialog."""
     room = controller.find_chat_window(room_name)
-    menu = _open_room_menu(room_name)
+    try:
+        menu = _open_room_menu(room_name)
+    except EmptyRoomMenu as e:
+        # Nothing to leave; close the leftover window so it stops showing up as open
+        win32gui.PostMessage(room, WM_CLOSE, 0, 0)
+        closed = _wait_for(lambda: None if _is_open(room) else True, 3)
+        return {"success": True, "was_member": False, "window_closed": bool(closed),
+                "message": f"{e}; closed its window instead of leaving"}
     before = _kakao_windows()
     _click_menu_item(menu, "채팅방 나가기", exclude=["신고"])
     dialog = _wait_new_window(before, lambda h: win32gui.GetClassName(h) != "EVA_Menu", timeout=4)
@@ -820,7 +887,7 @@ def leave_room(room_name: str) -> Dict:
             win32gui.PostMessage(dialog, WM_CLOSE, 0, 0)
         return {"success": False, "error": f"Room window '{room_name}' is still open after leaving"}
     msg = f"Left chat room '{room_name}'" + (" (owner left: the room was closed)" if ack else "")
-    return {"success": True, "room_closed": bool(ack), "message": msg}
+    return {"success": True, "was_member": True, "room_closed": bool(ack), "message": msg}
 
 
 # ---------------------------------------------------------------------------

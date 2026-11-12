@@ -137,3 +137,88 @@ class TestSafebotDialog:
                 patch.object(openchat.win32gui, "PostMessage") as post:
             openchat._dismiss(7)
         post.assert_called_once_with(7, openchat.WM_CLOSE, 0, 0)
+
+
+class TestRateLimit:
+    # OCR of the real dialog, garbled as it came back on 2026-10-29
+    GARBLED = ("이용자보호조지로 인하 빠른 시간 내에 다수의 으픈재팅방이 참여할 수 없 / 도루 제한되었습니다. "
+               "/ 잠시 후 다시 시도하 주세요. / 닫기 / 자세히 보기")
+
+    def test_garbled_dialog_is_recognised(self):
+        assert openchat.is_rate_limit_text(self.GARBLED)
+
+    def test_other_dialogs_are_not(self):
+        assert not openchat.is_rate_limit_text("세이프봇 적용 동의 / 동의하고 참여 / 취소")
+        assert not openchat.is_rate_limit_text("참여 코드를 입력해 주세요 / 확인")
+        assert not openchat.is_rate_limit_text("기본프로필만 참여 허용 / 확인")
+
+    def test_closed_with_close_button(self):
+        with patch.object(openchat, "_answer_dialog") as answer, \
+                patch.object(openchat, "_is_open", return_value=False):
+            err = openchat._close_rate_limit(5, self.GARBLED)
+        answer.assert_called_once_with(5, "닫기")
+        assert err.dialog_closed and err.dialog_text == self.GARBLED
+        assert isinstance(err, openchat.UIError)
+
+    def test_server_reports_error_code(self):
+        from kakao_mcp import server
+
+        def join(*a, **k):
+            raise openchat.RateLimited(self.GARBLED, dialog_closed=True)
+
+        with patch.object(server.controller, "is_kakaotalk_running", return_value={"running": True}), \
+                patch.object(openchat, "_kakao_windows", return_value=set()), \
+                patch.object(openchat, "check_rate_limit"):
+            result = server._openchat_call(join)
+        assert result["error_code"] == "rate_limited"
+        assert result["dialog_closed"] is True and result["dialog_text"] == self.GARBLED
+
+    def test_dialog_after_a_search_is_reported(self):
+        from kakao_mcp import server
+
+        def search(*a, **k):
+            return {"success": True, "results": []}
+
+        with patch.object(server.controller, "is_kakaotalk_running", return_value={"running": True}), \
+                patch.object(openchat, "_kakao_windows", return_value=set()), \
+                patch.object(openchat, "check_rate_limit",
+                             side_effect=openchat.RateLimited(self.GARBLED, dialog_closed=True)):
+            result = server._openchat_call(search)
+        assert result["error_code"] == "rate_limited"
+
+
+class TestEmptyRoomMenu:
+    """A room whose join never completed opens its ≡ menu as a zero-size EVA_Menu."""
+
+    def _open(self, menu_size):
+        with patch.object(openchat.controller, "find_chat_window", return_value=1), \
+                patch.object(openchat, "_kakao_windows", return_value=set()), \
+                patch.object(openchat, "_click"), \
+                patch.object(openchat, "_wait_new_window", return_value=2), \
+                patch.object(openchat, "_size", side_effect=[(380, 640), menu_size]), \
+                patch.object(openchat, "px", side_effect=lambda h, v: v), \
+                patch.object(openchat.time, "sleep"), \
+                patch.object(openchat.win32gui, "PostMessage") as post:
+            try:
+                return openchat._open_room_menu("room"), post
+            except openchat.EmptyRoomMenu as e:
+                return e, post
+
+    def test_empty_menu_is_closed_and_reported(self):
+        err, post = self._open((0, 0))
+        assert isinstance(err, openchat.EmptyRoomMenu)
+        post.assert_called_once_with(2, openchat.WM_CLOSE, 0, 0)
+
+    def test_normal_menu_is_returned(self):
+        menu, post = self._open((179, 335))
+        assert menu == 2
+        post.assert_not_called()
+
+    def test_leave_closes_the_leftover_window(self):
+        with patch.object(openchat.controller, "find_chat_window", return_value=1), \
+                patch.object(openchat, "_open_room_menu", side_effect=openchat.EmptyRoomMenu("empty")), \
+                patch.object(openchat, "_is_open", return_value=False), \
+                patch.object(openchat.win32gui, "PostMessage") as post:
+            result = openchat.leave_room("room")
+        post.assert_called_once_with(1, openchat.WM_CLOSE, 0, 0)
+        assert result["success"] and result["was_member"] is False and result["window_closed"]

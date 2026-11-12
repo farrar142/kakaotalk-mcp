@@ -133,8 +133,10 @@ class LinkGuard:
       a browser window whose title changed other than an unread counter such
       as "(3) YouTube" (a new tab: brought to the front, then Ctrl+W);
     - a new KakaoTalk window holding a web view (link preview / in-app browser);
-    - with ``strict`` (operations that open nothing, such as copying a chat):
-      any new KakaoTalk window, e.g. the "외부 링크로 이동" confirmation.
+    - with ``strict`` (operations that open nothing, such as copying a chat): a new
+      link confirmation ("주의 … 연결하기 / 취소"). Other new KakaoTalk windows are
+      left alone: KakaoTalkShadowWnd and untitled helpers appear when a room is
+      first activated.
 
     Afterwards the window that was in the foreground before gets the focus back.
     """
@@ -177,9 +179,13 @@ class LinkGuard:
 
     def _check_window(self, hwnd: int, pid: int, title: str) -> Optional[str]:
         if pid == self.kakao_pid:
-            if hwnd in self.before or not (self.strict or _has_webview(hwnd)) or self._is_ad(hwnd):
+            if hwnd in self.before or self._is_ad(hwnd):
                 return None
-            return self._close(hwnd, f"KakaoTalk window '{title}'")
+            if _has_webview(hwnd):
+                return self._close(hwnd, f"KakaoTalk web view '{title}'")
+            if self.strict and is_link_confirmation(hwnd):
+                return self._close(hwnd, "link confirmation")
+            return None
         if _exe_name(pid) not in BROWSER_EXES:
             return None
         if hwnd not in self.before:
