@@ -69,3 +69,35 @@ def test_ignored_key_stops_without_enter():
     ok, close = _select(fake, 189)
     assert not ok and screen.VK_RETURN not in fake.keys
     close.assert_called_once()
+
+
+def _row(size, entry, scale=1.0):
+    w, h = size
+    with patch.object(screen.win32gui, "GetWindowRect", return_value=(100, 50, 100 + w, 50 + h)), \
+            patch.object(screen, "dpi_scale", return_value=scale):
+        return screen.room_menu_row(7, entry)
+
+
+def test_room_menu_layout_by_size():
+    assert _row((225, 298), "톡게시판") == 189
+    assert _row((225, 324), "톡게시판") == 189
+    assert _row((179, 335), "톡게시판") == 252  # open chat (owner): 189 there is "오픈채팅 관리"
+    assert _row((179, 335), "채팅방 URL 복사") == 315
+
+
+def test_room_menu_layout_scaled():
+    assert _row((338, 486), "톡게시판", scale=1.5) == 189
+
+
+def test_unknown_menu_or_entry_gives_none():
+    assert _row((200, 400), "톡게시판") is None
+    assert _row((225, 298), "채팅방 URL 복사") is None
+
+
+def test_room_menu_select_closes_unknown_menu():
+    with patch.object(screen, "room_menu_row", return_value=None), \
+            patch.object(screen, "menu_select") as select, \
+            patch.object(screen.win32gui, "PostMessage") as close:
+        assert screen.room_menu_select(7, "톡게시판") is False
+    select.assert_not_called()
+    close.assert_called_once()

@@ -46,6 +46,29 @@ def highlighted_band(base, img) -> Optional[Tuple[int, int]]:
     return (box[1], box[3]) if box else None
 
 
+def room_menu_row(menu: int, entry: str) -> Optional[float]:
+    """Distance (100% scale) of ``entry`` above the bottom of a chat room ≡ menu, or
+    None when the menu's size matches no known layout or the layout lacks the entry."""
+    left, top, right, bottom = win32gui.GetWindowRect(menu)
+    scale = dpi_scale(menu)
+    w, h = (right - left) / scale, (bottom - top) / scale
+    tol = config.ROOM_MENU_SIZE_TOLERANCE
+    for (lw, lh), rows in config.ROOM_MENU_LAYOUTS.items():
+        if abs(w - lw) <= tol and abs(h - lh) <= tol:
+            return rows.get(entry)
+    return None
+
+
+def room_menu_select(menu: int, entry: str) -> bool:
+    """``menu_select`` the named entry of a chat room ≡ menu; False (menu closed) when the
+    menu is of an unknown layout or the entry is not on it."""
+    row = room_menu_row(menu, entry)
+    if row is None:
+        win32gui.PostMessage(menu, win32con.WM_CLOSE, 0, 0)
+        return False
+    return menu_select(menu, row)
+
+
 def menu_select(menu: int, from_bottom: float) -> bool:
     """Pick the ``EVA_Menu`` entry whose center is ``from_bottom`` px (100% scale) above
     the menu's bottom edge, with posted keys: no click, no focus.

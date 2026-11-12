@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 import win32gui
 
 from . import config, controller, ocr
-from .screen import menu_select, px
+from .screen import px, room_menu_row, room_menu_select
 from .openchat import (
     WM_CLOSE, UIError, _kakao_windows, _open_room_menu, _post_click, _post_wheel, _size,
     _wait_for, _wait_new_window,
@@ -57,7 +57,11 @@ def _open_board(room_name: str) -> int:
             time.sleep(config.BACKGROUND_CLICK_RETRY_SEC)
         menu = _open_room_menu(room_name, background=True)
         before = _kakao_windows()
-        if not menu_select(menu, config.BOARD_MENU_ITEM_FROM_BOTTOM):
+        if room_menu_row(menu, "톡게시판") is None:
+            w, h = _size(menu)
+            win32gui.PostMessage(menu, WM_CLOSE, 0, 0)
+            raise UIError(f"Unknown ≡ menu layout ({w}x{h}) in '{room_name}': 톡게시판 position not known")
+        if not room_menu_select(menu, "톡게시판"):
             continue
         board = _wait_new_window(before, controller.is_board_window, timeout=3)
         if board:

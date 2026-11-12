@@ -79,10 +79,11 @@ class TestVisibleItems:
 class TestOpenBoard:
     """톡게시판 is picked in the room menu with posted keys at a fixed distance from its bottom."""
 
-    def _open(self, selected, boards):
+    def _open(self, selected, boards, row=252):
         with patch.object(board, "_open_room_menu", return_value=7) as menu, \
                 patch.object(board, "_kakao_windows", return_value=set()), \
-                patch.object(board, "menu_select", side_effect=selected) as select, \
+                patch.object(board, "room_menu_row", return_value=row), \
+                patch.object(board, "room_menu_select", side_effect=selected) as select, \
                 patch.object(board, "_wait_new_window", side_effect=boards), \
                 patch.object(board.win32gui, "IsWindow", return_value=False), \
                 patch.object(board.time, "sleep"):
@@ -92,12 +93,22 @@ class TestOpenBoard:
     def test_entry_is_selected_by_distance_from_bottom(self):
         result, select, menu = self._open([True], [55])
         assert result == 55
-        select.assert_called_once_with(7, config.BOARD_MENU_ITEM_FROM_BOTTOM)
+        select.assert_called_once_with(7, "톡게시판")
         menu.assert_called_once_with("room", background=True)
 
     def test_menu_reopened_when_the_row_was_not_reached(self):
         result, select, menu = self._open([False, True], [55])
         assert result == 55 and select.call_count == 2 and menu.call_count == 2
+
+    def test_unknown_menu_layout_is_not_used(self):
+        with patch.object(board, "_size", return_value=(200, 400)), \
+                patch.object(board.win32gui, "PostMessage") as post:
+            try:
+                self._open([True], [55], row=None)
+                raise AssertionError("expected UIError")
+            except board.UIError as e:
+                assert "200x400" in str(e)
+        post.assert_called_once_with(7, board.WM_CLOSE, 0, 0)
 
     def test_menu_reopened_when_no_board_appeared(self):
         result, _, menu = self._open([True, True], [None, 55])

@@ -124,7 +124,18 @@ BOARD_META_MIN_LUMA = 90  # meta lines are gray (~118), titles near-black
 BOARD_TITLE_GAP = 25  # px between lines that still belong to one title
 BOARD_SCROLL_NOTCHES = 3
 BOARD_NAV_WAIT_SEC = 0.8
-BOARD_MENU_ITEM_FROM_BOTTOM = 189  # 톡게시판 row center in the room ≡ menu, px above its bottom edge (1:1 and group rooms alike)
+
+# Chat room ≡ menu (EVA_Menu) layouts, told apart by the menu's size at 100% scale:
+# entry -> its row center in px above the menu's bottom edge. Measured on KakaoTalk
+# PC 26.9 with posted Down keys. A menu of any other size is not used.
+ROOM_MENU_LAYOUTS = {
+    (225, 298): {"톡게시판": 189, "채팅방 나가기": 52},  # 1:1 room (8 entries)
+    (225, 324): {"톡게시판": 189, "채팅방 나가기": 52},  # group room (+ "채팅방 다시 만들기" on top)
+    # open chat as its owner (9 entries + icon bar): URL 복사 / 서랍 / 톡게시판 / 입장·퇴장 표시 /
+    # 오픈채팅 관리 / 커버 보기 / 챗봇 / 대화 내용 / 나가기
+    (179, 335): {"채팅방 URL 복사": 315, "톡게시판": 252, "채팅방 나가기": 52},
+}
+ROOM_MENU_SIZE_TOLERANCE = 4
 
 # Default output directory for downloaded images
 DEFAULT_IMAGE_OUTPUT_DIR = os.path.join(

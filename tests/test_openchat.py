@@ -222,3 +222,26 @@ class TestEmptyRoomMenu:
             result = openchat.leave_room("room")
         post.assert_called_once_with(1, openchat.WM_CLOSE, 0, 0)
         assert result["success"] and result["was_member"] is False and result["window_closed"]
+
+
+class TestGetRoomLink:
+    """The URL entry is picked by the menu's layout; a menu without it (not an open chat) is closed."""
+
+    def _link(self, selected, clip=""):
+        with patch.object(openchat, "_clear_clipboard"), \
+                patch.object(openchat, "_open_room_menu", return_value=7) as menu, \
+                patch.object(openchat, "_size", return_value=(225, 298)), \
+                patch.object(openchat, "room_menu_select", return_value=selected) as select, \
+                patch.object(openchat, "_read_clipboard", return_value=clip), \
+                patch.object(openchat.time, "sleep"):
+            return openchat.get_room_link("room"), select, menu
+
+    def test_url_copied_in_the_background(self):
+        result, select, menu = self._link(True, "https://open.kakao.com/o/x")
+        assert result["url"] == "https://open.kakao.com/o/x"
+        select.assert_called_once_with(7, "채팅방 URL 복사")
+        menu.assert_called_once_with("room", background=True)
+
+    def test_menu_without_the_entry(self):
+        result, _, _ = self._link(False)
+        assert not result["success"] and "225x298" in result["error"]

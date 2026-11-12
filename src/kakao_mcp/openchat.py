@@ -40,7 +40,7 @@ import win32gui
 import win32process
 
 from . import config, controller, ocr
-from .screen import dpi_scale, px
+from .screen import dpi_scale, px, room_menu_select
 
 _user32 = ctypes.windll.user32
 
@@ -836,10 +836,13 @@ def _click_menu_item(menu: int, label: str, exclude: Optional[List[str]] = None)
 
 
 def get_room_link(room_name: str) -> Dict:
-    """Copy an open chat room's URL via its menu and return it."""
+    """Copy an open chat room's URL via its menu and return it (room stays in the background)."""
     _clear_clipboard()
-    menu = _open_room_menu(room_name)
-    _click_menu_item(menu, "채팅방 URL 복사")
+    menu = _open_room_menu(room_name, background=True)
+    w, h = _size(menu)
+    if not room_menu_select(menu, "채팅방 URL 복사"):
+        return {"success": False, "error": f"'채팅방 URL 복사' not found in the ≡ menu of '{room_name}' "
+                                           f"({w}x{h}; is this an open chat room?)"}
     url = ""
     for _ in range(10):
         url = _read_clipboard().strip()
