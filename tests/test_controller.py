@@ -9,6 +9,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from kakao_mcp import controller, config
 
 
+@pytest.fixture(autouse=True)
+def _no_background_read(request):
+    """The tests below drive the foreground copy; the background read has its own tests."""
+    if request.node.get_closest_marker("background"):
+        yield
+        return
+    with patch("kakao_mcp.controller._read_background", return_value=""):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # is_kakaotalk_running
 # ---------------------------------------------------------------------------
@@ -248,7 +258,7 @@ def test_read_messages_unfocusable_list_is_error_without_typing(mock_find, mock_
 def test_read_messages_retries_after_closing_a_link_window(mock_find, mock_child, mock_ctrl, mock_clip,
                                                            mock_activate, mock_empty, mock_sleep,
                                                            mock_focus, mock_guard, _sweep):
-    mock_guard.return_value.check.side_effect = [["closed browser window 'x'"], []]
+    mock_guard.return_value.check.side_effect = [[], ["closed browser window 'x'"], []]  # background read first
     mock_clip.side_effect = ["https://example.com", "https://example.com",
                              "[A] [오전 10:00] Hello", "[A] [오전 10:00] Hello"]
     with patch.object(controller, "_user32") as u32:
@@ -583,3 +593,44 @@ def test_link_guard_skips_window_closed_during_check():
         gui.IsWindow.return_value = False
         guard = controller.LinkGuard("test", strict=False)
         assert guard.check() == []
+
+
+# ---------------------------------------------------------------------------
+# Background read (no focus, no foreground)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.background
+@patch("kakao_mcp.controller.close_link_dialogs", return_value=[])
+@patch("kakao_mcp.controller.LinkGuard")
+@patch("kakao_mcp.controller.activate_window")
+@patch("kakao_mcp.controller._read_background", return_value="[A] [오전 10:00] Hello")
+@patch("kakao_mcp.controller.find_child_window_recursive", return_value=33333)
+@patch("kakao_mcp.controller.find_chat_window", return_value=11111)
+def test_read_messages_in_background_never_activates(mock_find, mock_child, mock_bg, mock_activate,
+                                                     mock_guard, _sweep):
+    mock_guard.return_value.check.return_value = []
+    result = controller.read_chat_messages("Room")
+    assert result == {"success": True, "raw_text": "[A] [오전 10:00] Hello", "background": True}
+    mock_bg.assert_called_once_with(33333)
+    mock_activate.assert_not_called()
+
+
+@pytest.mark.background
+@patch("kakao_mcp.controller._restore_clipboard")
+@patch("kakao_mcp.controller._save_clipboard", return_value=[(13, "mine")])
+@patch("kakao_mcp.controller._background_copy")
+def test_background_read_copies_until_two_agree_and_restores(mock_copy, mock_save, mock_restore):
+    mock_copy.side_effect = ["[A] partial", "[A] full", "[A] full"]
+    assert controller._read_background(33333) == "[A] full"
+    assert mock_copy.call_count == 3
+    mock_restore.assert_called_once_with([(13, "mine")])
+
+
+@pytest.mark.background
+@patch("kakao_mcp.controller._restore_clipboard")
+@patch("kakao_mcp.controller._save_clipboard", return_value=[])
+@patch("kakao_mcp.controller._background_copy", return_value="")
+def test_background_read_gives_up_when_nothing_is_copied(mock_copy, mock_save, mock_restore):
+    assert controller._read_background(33333) == ""
+    mock_copy.assert_called_once()
+    mock_restore.assert_called_once_with([])

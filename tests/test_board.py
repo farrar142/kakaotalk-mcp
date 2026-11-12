@@ -46,8 +46,7 @@ def _line(text, y, h=12):
 class TestVisibleItems:
     def _items(self, lines, gray):
         img = Image.new("RGB", (370, 590), (255, 255, 255))
-        with patch.object(board, "_focus"), \
-                patch.object(ocr, "grab_window", return_value=img), \
+        with patch.object(ocr, "grab_window", return_value=img), \
                 patch.object(ocr, "recognize", return_value=lines), \
                 patch.object(ocr, "line_darkness",
                              side_effect=lambda _img, ln: 118 if ln["text"] in gray else 0):
@@ -75,3 +74,32 @@ class TestVisibleItems:
         b = {"title": "로그인도 안 했는데, 서버가 공격자의 코드를 실 행할 수", "meta": "10월 24일 오후 1.09 • 방구석"}
         assert board._same(a, b)
         assert not board._same(a, {"title": "다른 글", "meta": "10월 23일 오후 6:15 • 방구석"})
+
+
+class TestOpenBoard:
+    """The 톡게시판 entry is clicked at a fixed distance above the menu's bottom edge."""
+
+    def _open(self, menu_height, boards):
+        clicks = []
+        with patch.object(board, "_open_room_menu", return_value=7) as menu, \
+                patch.object(board, "_size", return_value=(225, menu_height)), \
+                patch.object(board, "_kakao_windows", return_value=set()), \
+                patch.object(board, "_post_click", side_effect=lambda h, x, y: clicks.append((h, x, y))), \
+                patch.object(board, "_wait_new_window", side_effect=boards), \
+                patch.object(board.win32gui, "IsWindow", return_value=False), \
+                patch.object(board.time, "sleep"):
+            result = board._open_board("room")
+        return result, clicks, menu
+
+    def test_one_to_one_menu(self):
+        result, clicks, menu = self._open(298, [55])
+        assert result == 55 and clicks == [(7, config.BOARD_MENU_ITEM_X, 110)]
+        menu.assert_called_once_with("room", background=True)
+
+    def test_group_menu_is_taller(self):
+        _, clicks, _ = self._open(324, [55])
+        assert clicks == [(7, config.BOARD_MENU_ITEM_X, 136)]
+
+    def test_ignored_click_is_retried(self):
+        result, clicks, menu = self._open(298, [None, 55])
+        assert result == 55 and len(clicks) == 2 and menu.call_count == 2

@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 날짜·기간·키워드·보낸 사람·최근 N건 검색
   - `kakao_read_messages`와 키워드 모니터가 읽은 메시지도 저장
 - `kakao_read_board` — 톡게시판(공지 / 일정 / 투표 / 퀴즈) 글 목록과 본문 읽기
+- 백그라운드 읽기: 메시지 읽기가 채팅방 창을 앞으로 가져오지 않는다(최소화된 창도 읽음)
+  - Ctrl+A/C를 메시지 목록에 `PostMessage`로 직접 보내고, Ctrl은 카카오톡 입력 스레드의 키보드 상태로 눌러 둔다
+  - 정해진 대기 대신 클립보드 시퀀스 번호가 바뀌는 순간 읽는다
+  - 읽은 뒤 클립보드를 원래대로(글 외 형식 포함) 되돌린다
+  - 실패하면 예전의 포그라운드 복사로 넘어간다. `config.BACKGROUND_READ`로 끌 수 있다
+- OCR 화면 찍기(`ocr.grab_window`)가 `PrintWindow`로 창을 직접 그려 받는다 — 다른 창에 가려져 있어도 찍힘(최소화된 창은 예전처럼 화면 픽셀)
+- 톡게시판 읽기(`kakao_read_board`)가 창을 앞으로 가져오지 않는다 — 클릭·휠을 창에 직접 보내고(`PostMessage`), 메뉴의 '톡게시판'은 고정 위치로, 상세보기 판단은 자식 창으로 한다(OCR 2곳 제거)
 - `kakao_openchat_join`의 `accept_safebot` — "세이프봇 적용 동의" 창을 "동의하고 참여"로 넘김 (기본은 "취소" 후 중단)
 
 ### Changed

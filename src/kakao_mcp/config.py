@@ -41,6 +41,13 @@ CLIPBOARD_RETRY_INTERVAL_SEC = 0.1
 KEY_COMBO_WAIT_SEC = 0.15  # Was 0.3 — Ctrl+A/C combo wait
 READ_SELECT_WAITS_SEC = (0.5, 1.0, 2.0, 3.0)  # Ctrl+A → Ctrl+C, longer each time until two copies agree
 
+# Background read: Ctrl+A/C posted to the message list, the room is never brought to the front
+BACKGROUND_READ = True
+BACKGROUND_COPY_TIMEOUT_SEC = 3.0  # per copy, waiting for the clipboard to change
+BACKGROUND_READ_ATTEMPTS = 4  # copies until two agree (a long selection may finish late)
+BACKGROUND_CLICK_ATTEMPTS = 4  # posted clicks are now and then ignored; checked and retried
+BACKGROUND_CLICK_RETRY_SEC = 1.5
+
 # Window and focus timing
 WINDOW_ACTIVATE_WAIT_SEC = 0.15  # Was 0.2 — after bring_window_to_front
 EDIT_CLICK_WAIT_SEC = 0.08  # Was 0.1 — after clicking edit control
@@ -101,6 +108,8 @@ BOARD_META_MIN_LUMA = 90  # meta lines are gray (~118), titles near-black
 BOARD_TITLE_GAP = 25  # px between lines that still belong to one title
 BOARD_SCROLL_NOTCHES = 3
 BOARD_NAV_WAIT_SEC = 0.8
+BOARD_MENU_ITEM_FROM_BOTTOM = 188  # 톡게시판 in the room ≡ menu, px above its bottom edge (1:1 and group rooms alike)
+BOARD_MENU_ITEM_X = 112
 
 # Default output directory for downloaded images
 DEFAULT_IMAGE_OUTPUT_DIR = os.path.join(

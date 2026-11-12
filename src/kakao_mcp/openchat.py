@@ -24,6 +24,7 @@ target window to the foreground and aborts if that fails, so a stray click
 never lands in another application.
 """
 import ctypes
+import ctypes.wintypes
 import re
 import time
 from typing import Callable, Dict, List, Optional, Set
@@ -49,6 +50,12 @@ GA_ROOT = 2
 GW_OWNER = 4
 WM_CLOSE = 0x0010
 WM_GETTEXT = 0x000D
+WM_MOUSEMOVE = 0x0200
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+WM_LBUTTONDBLCLK = 0x0203
+WM_MOUSEWHEEL = 0x020A
+MK_LBUTTON = 0x0001
 
 CREATED_DIALOG_TITLE = "오픈채팅방을 만들었습니다."
 COMMUNITY_DIALOG_TITLE = "커뮤니티 시작하기"
@@ -153,6 +160,57 @@ def _click(hwnd: int, x: float, y: float, double: bool = False, focus: bool = Tr
         _user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
         _user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
     time.sleep(0.4)
+
+
+def _child_at(hwnd: int, sx: int, sy: int) -> int:
+    """Deepest visible, enabled child window of ``hwnd`` under screen point (sx, sy)."""
+    while True:
+        cx, cy = win32gui.ScreenToClient(hwnd, (sx, sy))
+        child = _user32.ChildWindowFromPointEx(hwnd, ctypes.wintypes.POINT(cx, cy), 0x7)
+        if not child or child == hwnd:
+            return hwnd
+        hwnd = child
+
+
+def _post_mouse(target: int, msg: int, wparam: int, sx: int, sy: int):
+    cx, cy = win32gui.ScreenToClient(target, (sx, sy))
+    _user32.PostMessageW(target, msg, wparam, ctypes.c_ssize_t((cy << 16) | (cx & 0xFFFF)))
+
+
+def _post_click(hwnd: int, x: float, y: float, double: bool = False):
+    """Click at window-relative (x, y) by posting mouse messages to the window under it.
+
+    No focus, no foreground, the mouse cursor stays put. KakaoTalk now and then
+    ignores such a click (e.g. right after a menu closed), so callers check the
+    result and click again.
+    """
+    left, top, _, _ = win32gui.GetWindowRect(hwnd)
+    sx, sy = int(left + x), int(top + y)
+    target = _child_at(hwnd, sx, sy)
+    _post_mouse(target, WM_MOUSEMOVE, 0, sx, sy)
+    time.sleep(0.15)
+    _post_mouse(target, WM_LBUTTONDOWN, MK_LBUTTON, sx, sy)
+    time.sleep(0.08)
+    _post_mouse(target, WM_LBUTTONUP, 0, sx, sy)
+    if double:
+        time.sleep(0.05)
+        _post_mouse(target, WM_LBUTTONDBLCLK, MK_LBUTTON, sx, sy)
+        time.sleep(0.05)
+        _post_mouse(target, WM_LBUTTONUP, 0, sx, sy)
+    time.sleep(0.4)
+
+
+def _post_wheel(hwnd: int, x: float, y: float, notches: int):
+    """Mouse-wheel messages (positive = down) to the window under window-relative (x, y)."""
+    left, top, _, _ = win32gui.GetWindowRect(hwnd)
+    sx, sy = int(left + x), int(top + y)
+    target = _child_at(hwnd, sx, sy)
+    delta = (-120 if notches > 0 else 120) & 0xFFFF
+    for _ in range(abs(notches)):
+        # WM_MOUSEWHEEL carries screen coordinates
+        _user32.PostMessageW(target, WM_MOUSEWHEEL, delta << 16, ctypes.c_ssize_t((sy << 16) | (sx & 0xFFFF)))
+        time.sleep(0.05)
+    time.sleep(0.5)
 
 
 def _wheel(hwnd: int, x: float, y: float, notches: int):
@@ -679,14 +737,26 @@ def _confirm_profile(dialog: int, profile: str, nickname: Optional[str] = None):
 # Room menu: leave / link
 # ---------------------------------------------------------------------------
 
-def _open_room_menu(room_name: str) -> int:
+def _open_room_menu(room_name: str, background: bool = False) -> int:
+    """Open a chat room's ≡ menu; ``background`` clicks it without bringing the room to front."""
     room = controller.find_chat_window(room_name)
     if room is None:
         raise UIError(f"Chat window '{room_name}' not found (open it first)")
     w, _ = _size(room)
-    before = _kakao_windows()
-    _click(room, w - config.ROOM_MENU_ICON_OFFSET[0], config.ROOM_MENU_ICON_OFFSET[1])
-    menu = _wait_new_window(before, lambda h: win32gui.GetClassName(h) == "EVA_Menu", timeout=3)
+    x, y = w - config.ROOM_MENU_ICON_OFFSET[0], config.ROOM_MENU_ICON_OFFSET[1]
+    menu = None
+    for attempt in range(config.BACKGROUND_CLICK_ATTEMPTS if background else 1):
+        if attempt:
+            time.sleep(config.BACKGROUND_CLICK_RETRY_SEC)
+        before = _kakao_windows()
+        if background:
+            _post_click(room, x, y)
+        else:
+            _click(room, x, y)
+        menu = _wait_new_window(before, lambda h: win32gui.GetClassName(h) == "EVA_Menu",
+                                timeout=1.5 if background else 3)
+        if menu:
+            break
     if not menu:
         raise UIError("Chat room menu did not open")
     time.sleep(0.3)

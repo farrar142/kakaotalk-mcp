@@ -21,9 +21,52 @@ _executor = ThreadPoolExecutor(max_workers=1)
 _engine = None
 
 
+PW_RENDERFULLCONTENT = 2
+GA_ROOT = 2
+
+
+def _print_window(root: int) -> Optional[Image.Image]:
+    """Render a top-level window into a bitmap (PrintWindow): works while it is covered."""
+    import win32ui
+    l, t, r, b = win32gui.GetWindowRect(root)
+    w, h = r - l, b - t
+    if w <= 0 or h <= 0:
+        return None
+    wdc = win32gui.GetWindowDC(root)
+    src = win32ui.CreateDCFromHandle(wdc)
+    mem = src.CreateCompatibleDC()
+    bmp = win32ui.CreateBitmap()
+    try:
+        bmp.CreateCompatibleBitmap(src, w, h)
+        mem.SelectObject(bmp)
+        if not ctypes.windll.user32.PrintWindow(root, mem.GetSafeHdc(), PW_RENDERFULLCONTENT):
+            return None
+        return Image.frombuffer("RGB", (w, h), bmp.GetBitmapBits(True), "raw", "BGRX", 0, 1)
+    finally:
+        win32gui.DeleteObject(bmp.GetHandle())
+        mem.DeleteDC()
+        src.DeleteDC()
+        win32gui.ReleaseDC(root, wdc)
+
+
 def grab_window(hwnd: int) -> Image.Image:
-    """Capture the on-screen pixels of a window (it must be visible/unobscured)."""
-    return ImageGrab.grab(bbox=win32gui.GetWindowRect(hwnd), all_screens=True)
+    """Capture a window's pixels without bringing it to the front.
+
+    Renders its top-level window with PrintWindow and crops to ``hwnd``. A minimized
+    window or a failed/blank render falls back to the on-screen pixels (ImageGrab),
+    which need the window visible and unobscured.
+    """
+    rect = win32gui.GetWindowRect(hwnd)
+    root = ctypes.windll.user32.GetAncestor(hwnd, GA_ROOT) or hwnd
+    if not ctypes.windll.user32.IsIconic(root):
+        try:
+            img = _print_window(root)
+        except Exception:
+            img = None
+        if img is not None and img.convert("L").getextrema()[0] != img.convert("L").getextrema()[1]:
+            rl, rt = win32gui.GetWindowRect(root)[:2]
+            return img.crop((rect[0] - rl, rect[1] - rt, rect[2] - rl, rect[3] - rt))
+    return ImageGrab.grab(bbox=rect, all_screens=True)
 
 
 def _get_engine():

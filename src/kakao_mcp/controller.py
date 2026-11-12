@@ -807,10 +807,126 @@ def _copy_selection() -> str:
     return ""
 
 
+# Clipboard formats holding GDI handles (or drawn by their owner): not copyable as data
+_CLIPBOARD_HANDLE_FORMATS = {2, 3, 9, 14, 0x80, 0x82, 0x83, 0x8E}
+
+
+def _open_clipboard(retries: int = 50, interval_sec: float = 0.02):
+    """OpenClipboard, retrying while another process (KakaoTalk after a copy) holds it."""
+    for _ in range(retries - 1):
+        try:
+            win32clipboard.OpenClipboard()
+            return
+        except Exception:
+            time.sleep(interval_sec)
+    win32clipboard.OpenClipboard()
+
+
+def _save_clipboard() -> List[tuple]:
+    """Every copyable format on the clipboard, to put back after a read."""
+    saved: List[tuple] = []
+    try:
+        _open_clipboard()
+    except Exception:
+        return saved
+    try:
+        fmt = 0
+        while True:
+            fmt = win32clipboard.EnumClipboardFormats(fmt)
+            if not fmt:
+                break
+            if fmt in _CLIPBOARD_HANDLE_FORMATS:
+                continue
+            try:
+                saved.append((fmt, win32clipboard.GetClipboardData(fmt)))
+            except Exception:
+                pass
+    finally:
+        win32clipboard.CloseClipboard()
+    return saved
+
+
+def _restore_clipboard(saved: List[tuple]):
+    try:
+        _open_clipboard()
+    except Exception as e:
+        _log(f"Could not restore the clipboard: {e}")
+        return
+    try:
+        win32clipboard.EmptyClipboard()
+        for fmt, data in saved:
+            try:
+                win32clipboard.SetClipboardData(fmt, data)
+            except Exception:
+                pass
+    finally:
+        win32clipboard.CloseClipboard()
+
+
+def _post_key(hwnd: int, vk: int):
+    lparam = ctypes.c_ssize_t
+    _user32.PostMessageW(hwnd, 0x0100, vk, lparam(1))  # WM_KEYDOWN
+    _user32.PostMessageW(hwnd, 0x0101, vk, lparam(0xC0000001))  # WM_KEYUP (repeat 1, released)
+
+
+def _background_copy(list_hwnd: int, timeout_sec: float) -> str:
+    """Ctrl+A, Ctrl+C posted straight to the message list, without focus or foreground.
+
+    The posted keys reach only that window. Ctrl is "held" by attaching to KakaoTalk's
+    input thread and setting its keyboard state, restored right after the copy.
+    """
+    seq = _user32.GetClipboardSequenceNumber()
+    tid = win32process.GetWindowThreadProcessId(list_hwnd)[0]
+    me = win32api.GetCurrentThreadId()
+    if not _user32.AttachThreadInput(me, tid, True):
+        return ""
+    try:
+        original = (ctypes.c_ubyte * 256)()
+        _user32.GetKeyboardState(original)
+        state = (ctypes.c_ubyte * 256)(*original)
+        state[config.VK_CONTROL] = state[0xA2] = 0x80  # VK_CONTROL, VK_LCONTROL
+        _user32.SetKeyboardState(state)
+        try:
+            _post_key(list_hwnd, config.VK_A)
+            _post_key(list_hwnd, config.VK_C)
+            deadline = time.monotonic() + timeout_sec
+            while time.monotonic() < deadline:
+                if _user32.GetClipboardSequenceNumber() != seq:
+                    text = _read_clipboard_text()
+                    if text:
+                        return text
+                time.sleep(0.02)
+        finally:
+            _user32.SetKeyboardState(original)
+    finally:
+        _user32.AttachThreadInput(me, tid, False)
+    return ""
+
+
+def _read_background(list_hwnd: int) -> str:
+    """Copy the room's loaded messages without bringing it to the front; "" if nothing came.
+
+    Copies again until two copies agree (a long selection may finish late). The
+    clipboard is put back as it was, every format included.
+    """
+    saved = _save_clipboard()
+    try:
+        previous = None
+        for _ in range(config.BACKGROUND_READ_ATTEMPTS):
+            text = _background_copy(list_hwnd, config.BACKGROUND_COPY_TIMEOUT_SEC)
+            if not text or text == previous:
+                return text or previous or ""
+            previous = text
+        return previous or ""
+    finally:
+        _restore_clipboard(saved)
+
+
 def read_chat_messages(room_name: str) -> Dict:
     """Read messages from a KakaoTalk chat room via Ctrl+A → Ctrl+C.
 
-    NOTE: This briefly brings the chat window to the foreground.
+    Tries a background copy first (the room stays where it is, minimized too).
+    Falls back to the foreground copy, which briefly brings the chat window to front.
 
     Returns:
         Dict with success (bool), raw_text (str), and error if failed.
@@ -830,6 +946,16 @@ def read_chat_messages(room_name: str) -> Dict:
     # A leftover link confirmation is modal: the room can't take the foreground
     # until it is closed
     warnings: List[str] = close_link_dialogs(hwnd)
+
+    if config.BACKGROUND_READ:
+        guard = LinkGuard(context=f"reading '{room_name}' in the background", strict=True)
+        raw_text = _read_background(list_hwnd)
+        warnings += guard.check()
+        if raw_text:
+            result = {"success": True, "raw_text": raw_text, "background": True}
+            if warnings:
+                result["link_warnings"] = warnings
+            return result
 
     # Bring the chat window to foreground — required for keybd_event
     err = activate_window(hwnd, room_name)

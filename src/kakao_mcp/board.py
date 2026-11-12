@@ -11,6 +11,8 @@ Mapped against KakaoTalk PC 26.9 (100% display scale):
   then scrolled back to the top.
 - In 상세보기, Ctrl+A / Ctrl+C (no click needed, so links are never hit) copies
   the post body. Comments are not part of the copy.
+- Everything runs in the background: clicks, wheel and keys are posted to the
+  windows, screenshots use PrintWindow, so no window is brought to the front.
 """
 import re
 import time
@@ -21,8 +23,8 @@ import win32gui
 
 from . import config, controller, ocr
 from .openchat import (
-    VK_ESCAPE, WM_CLOSE, UIError, _clear_clipboard, _click, _focus, _kakao_windows,
-    _open_room_menu, _press, _read_clipboard, _size, _wait_for, _wait_new_window, _wheel,
+    WM_CLOSE, UIError, _kakao_windows, _open_room_menu, _post_click, _post_wheel, _size,
+    _wait_for, _wait_new_window,
 )
 
 TABS = ("공지", "일정", "투표", "퀴즈")
@@ -31,7 +33,7 @@ META_DATE = re.compile(r"방금|\d+\s*(?:분|시간|일)\s*전|어제|\d{1,2}월
 COMMENTS = re.compile(r"[댓덧]글\s*(\d[\d,]*)")
 ABS_DATE = re.compile(
     r"(?:(\d{4})년\s*)?(\d{1,2})월\s*(\d{1,2})일\s*(?:(오전|오후)\s*(\d{1,2})\s*[:.]?\s*(\d{2}))?")
-VK_HOME = 0x24
+TOP_NOTCHES = 40  # wheel-up notches that bring any list back to its top
 YESTERDAY = re.compile(r"어제\s*(?:(오전|오후)\s*(\d{1,2})\s*[:.]?\s*(\d{2}))?")
 
 
@@ -43,43 +45,59 @@ def _find_board(room_name: str) -> Optional[int]:
 
 
 def _open_board(room_name: str) -> int:
-    """Open the room's 톡게시판 from its ≡ menu."""
-    menu = _open_room_menu(room_name)
-    lines = ocr.recognize(ocr.grab_window(menu))
-    item = ocr.find_line(lines, "톡게시판", threshold=0.6)
-    if not item:
-        # OCR rarely gets this label right ("특기시단", "홀계시판"); it is the
-        # entry right below "채팅방 서랍".
-        drawer = ocr.find_line(lines, "채팅방 서랍", threshold=0.6)
-        below = [ln for ln in lines if drawer and ln["cy"] > drawer["cy"] + 5]
-        item = min(below, key=lambda ln: ln["cy"]) if below else None
-    if not item:
-        _press(VK_ESCAPE)
-        raise UIError(f"'톡게시판' not found in the room menu: {[ln['text'] for ln in lines]}")
-    before = _kakao_windows()
-    _click(menu, item["cx"], item["cy"], focus=False)
-    board = _wait_new_window(before, controller.is_board_window, timeout=5)
-    if not board:
-        raise UIError(f"톡게시판 window did not open for '{room_name}'")
-    time.sleep(0.8)
-    return board
+    """Open the room's 톡게시판 from its ≡ menu, without bringing anything to the front.
+
+    The entry sits at a fixed distance above the menu's bottom edge: rooms with an
+    extra entry on top (group rooms: "채팅방 다시 만들기") have a taller menu.
+    """
+    for attempt in range(config.BACKGROUND_CLICK_ATTEMPTS):
+        if attempt:
+            time.sleep(config.BACKGROUND_CLICK_RETRY_SEC)
+        menu = _open_room_menu(room_name, background=True)
+        _, h = _size(menu)
+        before = _kakao_windows()
+        _post_click(menu, config.BOARD_MENU_ITEM_X, h - config.BOARD_MENU_ITEM_FROM_BOTTOM)
+        board = _wait_new_window(before, controller.is_board_window, timeout=3)
+        if board:
+            time.sleep(0.8)
+            return board
+        if win32gui.IsWindow(menu) and win32gui.IsWindowVisible(menu):
+            win32gui.PostMessage(menu, WM_CLOSE, 0, 0)
+    raise UIError(f"톡게시판 window did not open for '{room_name}'")
 
 
 def _in_detail(board: int) -> bool:
-    w, _ = _size(board)
-    _focus(board)
-    head = ocr.recognize(ocr.grab_window(board).crop((0, 25, w, 70)))
-    return ocr.find_line(head, "상세보기", threshold=0.6) is not None
+    """상세보기 is up: only it has the comment box (a visible RichEdit20W child)."""
+    found = []
+
+    def _cb(h, _):
+        if win32gui.IsWindowVisible(h) and win32gui.GetClassName(h) == "RichEdit20W":
+            found.append(h)
+        return True
+
+    win32gui.EnumChildWindows(board, _cb, None)
+    return bool(found)
+
+
+def _back_to_list(board: int):
+    for _ in range(config.BACKGROUND_CLICK_ATTEMPTS):
+        if not _in_detail(board):
+            return
+        _post_click(board, *config.BOARD_BACK_POS)
+        time.sleep(config.BOARD_NAV_WAIT_SEC)
+    raise UIError("Could not go back to the board list")
+
+
+def _to_top(board: int):
+    w, h = _size(board)
+    _post_wheel(board, w / 2, (config.BOARD_LIST_TOP + h) / 2, -TOP_NOTCHES)
 
 
 def _show_list(board: int, tab: str):
-    if _in_detail(board):
-        _click(board, *config.BOARD_BACK_POS)
-        time.sleep(config.BOARD_NAV_WAIT_SEC)
-    _click(board, config.BOARD_TAB_X[tab], config.BOARD_TAB_Y)
+    _back_to_list(board)
+    _post_click(board, config.BOARD_TAB_X[tab], config.BOARD_TAB_Y)
     time.sleep(config.BOARD_NAV_WAIT_SEC)
-    _press(VK_HOME)  # the tab keeps its scroll position
-    time.sleep(0.5)
+    _to_top(board)  # the tab keeps its scroll position
 
 
 def _visible_items(board: int) -> List[Dict]:
@@ -88,7 +106,6 @@ def _visible_items(board: int) -> List[Dict]:
     Items whose title starts above the viewport are skipped; lines of banners or
     empty-state text have no meta line and are dropped.
     """
-    _focus(board)
     img = ocr.grab_window(board)
     w, h = img.size
     top = config.BOARD_LIST_TOP
@@ -117,7 +134,7 @@ def _scroll(board: int, pages: int):
     """Scroll the list by ``pages`` steps (negative = up)."""
     w, h = _size(board)
     if pages:
-        _wheel(board, w / 2, (config.BOARD_LIST_TOP + h) / 2, pages * config.BOARD_SCROLL_NOTCHES)
+        _post_wheel(board, w / 2, (config.BOARD_LIST_TOP + h) / 2, pages * config.BOARD_SCROLL_NOTCHES)
 
 
 def _same(a: Dict, b: Dict) -> bool:
@@ -177,30 +194,32 @@ def _read_body(board: int, item: Dict, from_page: int) -> str:
     _scroll(board, item["page"] - from_page)
     target = next((it for it in _visible_items(board) if _same(it, item)), None)
     if not target:  # not where expected: count pages again from the top
-        _focus(board)
-        _press(VK_HOME)
-        time.sleep(0.5)
+        _to_top(board)
         _scroll(board, item["page"])
         target = next((it for it in _visible_items(board) if _same(it, item)), None)
     if not target:
         raise UIError(f"Board post not found again: {item['title']!r}")
-    _click(board, target["cx"], target["cy"], double=True)
-    if not _wait_for(lambda: _in_detail(board), timeout=4, interval=0.3):
+    for _ in range(config.BACKGROUND_CLICK_ATTEMPTS):
+        _post_click(board, target["cx"], target["cy"], double=True)
+        if _wait_for(lambda: _in_detail(board), timeout=3, interval=0.3):
+            break
+    else:
         raise UIError(f"Board post did not open: {item['title']!r}")
-    _clear_clipboard()
-    _focus(board)
-    controller._send_ctrl_key_combo(config.VK_A)
-    time.sleep(config.KEY_COMBO_WAIT_SEC)
-    controller._send_ctrl_key_combo(config.VK_C)
     body = ""
-    for _ in range(10):
-        time.sleep(0.2)
-        body = _read_clipboard()
+    for pane in _body_panes(board):
+        body = controller._read_background(pane)
         if body:
             break
-    _click(board, *config.BOARD_BACK_POS)
-    time.sleep(config.BOARD_NAV_WAIT_SEC)
+    _back_to_list(board)
     return body.replace("\r\n", "\n").strip()
+
+
+def _body_panes(board: int) -> List[int]:
+    """Children of 상세보기 that may take Ctrl+A/C, the post body pane (id 100) first."""
+    kids: List[int] = []
+    win32gui.EnumChildWindows(board, lambda h, _: kids.append(h) or True, None)
+    panes = [h for h in kids if win32gui.IsWindowVisible(h) and win32gui.GetClassName(h) == "EVA_ChildWindow"]
+    return sorted(panes, key=lambda h: win32gui.GetDlgCtrlID(h) != 100)
 
 
 def read_board(room_name: str, tab: str = "공지", max_posts: int = 10,
@@ -249,3 +268,5 @@ def read_board(room_name: str, tab: str = "공지", max_posts: int = 10,
     finally:
         if opened and win32gui.IsWindow(board):
             win32gui.PostMessage(board, WM_CLOSE, 0, 0)
+            # gone before returning, or the next read would pick up the closing window
+            _wait_for(lambda: not win32gui.IsWindow(board), timeout=3, interval=0.1)
