@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 import win32gui
 
 from . import config, controller, ocr
+from .screen import menu_select, px
 from .openchat import (
     WM_CLOSE, UIError, _kakao_windows, _open_room_menu, _post_click, _post_wheel, _size,
     _wait_for, _wait_new_window,
@@ -47,16 +48,17 @@ def _find_board(room_name: str) -> Optional[int]:
 def _open_board(room_name: str) -> int:
     """Open the room's 톡게시판 from its ≡ menu, without bringing anything to the front.
 
-    The entry sits at a fixed distance above the menu's bottom edge: rooms with an
-    extra entry on top (group rooms: "채팅방 다시 만들기") have a taller menu.
+    The entry sits at a fixed distance above the menu's bottom edge (group rooms have
+    an extra entry on top, "채팅방 다시 만들기"). It is picked with posted Down / Enter,
+    Enter only once the highlight is seen on that row (``screen.menu_select``).
     """
     for attempt in range(config.BACKGROUND_CLICK_ATTEMPTS):
         if attempt:
             time.sleep(config.BACKGROUND_CLICK_RETRY_SEC)
         menu = _open_room_menu(room_name, background=True)
-        _, h = _size(menu)
         before = _kakao_windows()
-        _post_click(menu, config.BOARD_MENU_ITEM_X, h - config.BOARD_MENU_ITEM_FROM_BOTTOM)
+        if not menu_select(menu, config.BOARD_MENU_ITEM_FROM_BOTTOM):
+            continue
         board = _wait_new_window(before, controller.is_board_window, timeout=3)
         if board:
             time.sleep(0.8)
@@ -83,19 +85,19 @@ def _back_to_list(board: int):
     for _ in range(config.BACKGROUND_CLICK_ATTEMPTS):
         if not _in_detail(board):
             return
-        _post_click(board, *config.BOARD_BACK_POS)
+        _post_click(board, *(px(board, v) for v in config.BOARD_BACK_POS))
         time.sleep(config.BOARD_NAV_WAIT_SEC)
     raise UIError("Could not go back to the board list")
 
 
 def _to_top(board: int):
     w, h = _size(board)
-    _post_wheel(board, w / 2, (config.BOARD_LIST_TOP + h) / 2, -TOP_NOTCHES)
+    _post_wheel(board, w / 2, (px(board, config.BOARD_LIST_TOP) + h) / 2, -TOP_NOTCHES)
 
 
 def _show_list(board: int, tab: str):
     _back_to_list(board)
-    _post_click(board, config.BOARD_TAB_X[tab], config.BOARD_TAB_Y)
+    _post_click(board, px(board, config.BOARD_TAB_X[tab]), px(board, config.BOARD_TAB_Y))
     time.sleep(config.BOARD_NAV_WAIT_SEC)
     _to_top(board)  # the tab keeps its scroll position
 
@@ -108,8 +110,9 @@ def _visible_items(board: int) -> List[Dict]:
     """
     img = ocr.grab_window(board)
     w, h = img.size
-    top = config.BOARD_LIST_TOP
-    crop = img.crop((0, top, w - config.BOARD_THUMB_WIDTH, h))
+    top = round(px(board, config.BOARD_LIST_TOP))
+    crop = img.crop((0, top, w - round(px(board, config.BOARD_THUMB_WIDTH)), h))
+    gap = px(board, config.BOARD_TITLE_GAP)
     items, titles, prev_bottom, cut = [], [], None, False
     for ln in ocr.recognize(crop, scale=config.OPENCHAT_OCR_SCALE):
         if ocr.line_darkness(crop, ln) >= config.BOARD_META_MIN_LUMA:
@@ -123,7 +126,7 @@ def _visible_items(board: int) -> List[Dict]:
         elif not titles and ln["y"] <= 4:
             cut = True  # the title starts above the viewport
         elif not cut:
-            if titles and ln["y"] - prev_bottom > config.BOARD_TITLE_GAP:
+            if titles and ln["y"] - prev_bottom > gap:
                 titles = []  # a big gap: the earlier lines were not this item's title
             titles.append(ln)
         prev_bottom = ln["y"] + ln["h"]
@@ -134,7 +137,7 @@ def _scroll(board: int, pages: int):
     """Scroll the list by ``pages`` steps (negative = up)."""
     w, h = _size(board)
     if pages:
-        _post_wheel(board, w / 2, (config.BOARD_LIST_TOP + h) / 2, pages * config.BOARD_SCROLL_NOTCHES)
+        _post_wheel(board, w / 2, (px(board, config.BOARD_LIST_TOP) + h) / 2, pages * config.BOARD_SCROLL_NOTCHES)
 
 
 def _same(a: Dict, b: Dict) -> bool:

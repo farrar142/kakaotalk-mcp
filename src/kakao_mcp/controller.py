@@ -213,21 +213,25 @@ class LinkGuard:
 
 
 def is_link_confirmation(hwnd: int, owner: Optional[int] = None) -> bool:
-    """The link confirmation ("주의 … 이 링크에 연결할까요? 연결하기 / 취소"), told by its shape:
-    an untitled KakaoTalk dialog of a fixed size (scaled by the window's DPI), owned by
-    ``owner`` when given. No screenshot or OCR, so it works behind other windows."""
+    """The link confirmation ("주의 / 친구가 아닌 사용자가 보낸 링크는 … 연결하기 / 취소").
+
+    An untitled KakaoTalk dialog of a fixed size (scaled by the window's DPI), owned by
+    ``owner`` when given, with the "주의" heading (template, no OCR). The heading tells
+    it from the room's leave confirmation, which is about the same size. PrintWindow
+    shot, so it works behind other windows.
+    """
+    from . import screen, templates
     if win32gui.GetWindowText(hwnd) or win32gui.GetClassName(hwnd) != config.KAKAO_CHAT_WINDOW_CLASS:
         return False
     if owner is not None and win32gui.GetWindow(hwnd, win32con.GW_OWNER) != owner:
         return False
-    try:
-        scale = (_user32.GetDpiForWindow(hwnd) or 96) / 96
-    except Exception:
-        scale = 1.0
+    scale = screen.dpi_scale(hwnd)
     left, top, right, bottom = win32gui.GetWindowRect(hwnd)
     w, h = config.LINK_DIALOG_SIZE
     tol = config.LINK_DIALOG_SIZE_TOLERANCE * scale
-    return abs(right - left - w * scale) <= tol and abs(bottom - top - h * scale) <= tol
+    if abs(right - left - w * scale) > tol or abs(bottom - top - h * scale) > tol:
+        return False
+    return templates.window_matches(hwnd, config.LINK_DIALOG_TEMPLATE)
 
 
 def close_link_dialogs(room_hwnd: int) -> List[str]:

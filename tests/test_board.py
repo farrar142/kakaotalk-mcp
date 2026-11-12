@@ -77,29 +77,28 @@ class TestVisibleItems:
 
 
 class TestOpenBoard:
-    """The 톡게시판 entry is clicked at a fixed distance above the menu's bottom edge."""
+    """톡게시판 is picked in the room menu with posted keys at a fixed distance from its bottom."""
 
-    def _open(self, menu_height, boards):
-        clicks = []
+    def _open(self, selected, boards):
         with patch.object(board, "_open_room_menu", return_value=7) as menu, \
-                patch.object(board, "_size", return_value=(225, menu_height)), \
                 patch.object(board, "_kakao_windows", return_value=set()), \
-                patch.object(board, "_post_click", side_effect=lambda h, x, y: clicks.append((h, x, y))), \
+                patch.object(board, "menu_select", side_effect=selected) as select, \
                 patch.object(board, "_wait_new_window", side_effect=boards), \
                 patch.object(board.win32gui, "IsWindow", return_value=False), \
                 patch.object(board.time, "sleep"):
             result = board._open_board("room")
-        return result, clicks, menu
+        return result, select, menu
 
-    def test_one_to_one_menu(self):
-        result, clicks, menu = self._open(298, [55])
-        assert result == 55 and clicks == [(7, config.BOARD_MENU_ITEM_X, 110)]
+    def test_entry_is_selected_by_distance_from_bottom(self):
+        result, select, menu = self._open([True], [55])
+        assert result == 55
+        select.assert_called_once_with(7, config.BOARD_MENU_ITEM_FROM_BOTTOM)
         menu.assert_called_once_with("room", background=True)
 
-    def test_group_menu_is_taller(self):
-        _, clicks, _ = self._open(324, [55])
-        assert clicks == [(7, config.BOARD_MENU_ITEM_X, 136)]
+    def test_menu_reopened_when_the_row_was_not_reached(self):
+        result, select, menu = self._open([False, True], [55])
+        assert result == 55 and select.call_count == 2 and menu.call_count == 2
 
-    def test_ignored_click_is_retried(self):
-        result, clicks, menu = self._open(298, [None, 55])
-        assert result == 55 and len(clicks) == 2 and menu.call_count == 2
+    def test_menu_reopened_when_no_board_appeared(self):
+        result, _, menu = self._open([True, True], [None, 55])
+        assert result == 55 and menu.call_count == 2

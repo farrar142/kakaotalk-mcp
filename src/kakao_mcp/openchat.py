@@ -35,6 +35,7 @@ import win32gui
 import win32process
 
 from . import config, controller, ocr
+from .screen import dpi_scale, px
 
 _user32 = ctypes.windll.user32
 
@@ -341,9 +342,9 @@ def open_openchat_window() -> int:
 
     main = _main_hwnd()
     before = _kakao_windows()
-    _click(main, *config.MAIN_CHAT_TAB_POS)  # chat tab — the open-chat icon lives in its header
+    _click(main, *(px(main, v) for v in config.MAIN_CHAT_TAB_POS))  # chat tab — the open-chat icon lives in its header
     w, _ = _size(main)
-    _click(main, w - config.MAIN_OPENCHAT_ICON_OFFSET[0], config.MAIN_OPENCHAT_ICON_OFFSET[1])
+    _click(main, w - px(main, config.MAIN_OPENCHAT_ICON_OFFSET[0]), px(main, config.MAIN_OPENCHAT_ICON_OFFSET[1]))
     hwnd = _wait_new_window(before, _is_openchat_window, timeout=5)
     if not hwnd:
         raise UIError("Open chat window did not appear")
@@ -374,7 +375,7 @@ def _result_list(oc_hwnd: int) -> Optional[int]:
 def _go_home(oc_hwnd: int):
     """Return the open chat window to its home view (back arrow in search view)."""
     if _result_list(oc_hwnd):
-        _click(oc_hwnd, *config.OPENCHAT_BACK_POS)
+        _click(oc_hwnd, *(px(oc_hwnd, v) for v in config.OPENCHAT_BACK_POS))
         time.sleep(0.5)
 
 
@@ -403,10 +404,10 @@ def _split_items(img) -> List[tuple]:
     return [(a, b) for a, b in zip(bounds, bounds[1:]) if b - a > 40]
 
 
-def _parse_item(img, top: int, bottom: int) -> Optional[Dict]:
+def _parse_item(img, top: int, bottom: int, scale: float = 1.0) -> Optional[Dict]:
     """OCR one result row: title (dark text), description, member count/activity."""
     w, _ = img.size
-    crop = img.crop((0, top, w - config.OPENCHAT_THUMB_WIDTH, bottom))
+    crop = img.crop((0, top, w - config.OPENCHAT_THUMB_WIDTH * scale, bottom))
     lines = ocr.recognize(crop, scale=config.OPENCHAT_OCR_SCALE)
     if not lines:
         return None
@@ -449,7 +450,7 @@ def _visible_results(oc_hwnd: int, at_top: bool = False) -> List[Dict]:
     img = ocr.grab_window(lst)
     items = []
     for top, bottom in _split_items(img):
-        item = _parse_item(img, top, bottom)
+        item = _parse_item(img, top, bottom, dpi_scale(lst))
         if item and item["title"] and ocr.similarity(item["title"], NO_RESULTS_TEXT) < 0.8:
             item["complete"] = item["complete"] and (item["top"] > 0 or at_top)
             item["list_hwnd"] = lst
@@ -570,7 +571,7 @@ def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
 
     before = _kakao_windows()
     _focus(oc)
-    _click(lst, config.OPENCHAT_ITEM_CLICK_X, item["y_center"], double=True, focus=False)
+    _click(lst, px(lst, config.OPENCHAT_ITEM_CLICK_X), item["y_center"], double=True, focus=False)
     preview = _wait_new_window(before, _is_preview_window, timeout=5)
     if not preview:
         room = _find_titled_window(room_title, set())
@@ -580,7 +581,7 @@ def join_openchat(query: str, title: Optional[str] = None, index: int = 0,
     time.sleep(0.6)
 
     pw, ph = _size(preview)
-    btn_y = ph - config.OPENCHAT_PREVIEW_BUTTON_FROM_BOTTOM
+    btn_y = ph - px(preview, config.OPENCHAT_PREVIEW_BUTTON_FROM_BOTTOM)
 
     before = _kakao_windows()
     _click(preview, pw / 2, btn_y)
@@ -719,7 +720,7 @@ def _joined(room: int, already: bool) -> Dict:
 def _confirm_profile(dialog: int, profile: str, nickname: Optional[str] = None):
     w, h = _size(dialog)
     if profile == "random":
-        _click(dialog, *config.PROFILE_RANDOM_RADIO_POS)
+        _click(dialog, *(px(dialog, v) for v in config.PROFILE_RANDOM_RADIO_POS))
     if nickname:
         # The nickname box is disabled until the random profile is selected
         edit = next((c for c in _children(dialog, direct=False) if win32gui.GetClassName(c) == "Edit"), None)
@@ -728,9 +729,11 @@ def _confirm_profile(dialog: int, profile: str, nickname: Optional[str] = None):
         _set_text(edit, nickname)
         time.sleep(0.2)
         if _get_text(edit) != nickname:
-            _click(dialog, w - config.FORM_CANCEL_FROM_RIGHT, h - config.DIALOG_BUTTON_FROM_BOTTOM)
+            _click(dialog, w - px(dialog, config.FORM_CANCEL_FROM_RIGHT),
+                   h - px(dialog, config.DIALOG_BUTTON_FROM_BOTTOM))
             raise UIError(f"Nickname was not accepted (field shows {_get_text(edit)!r})")
-    _click(dialog, w / 2 - config.PROFILE_CONFIRM_FROM_CENTER, h - config.DIALOG_BUTTON_FROM_BOTTOM)
+    _click(dialog, w / 2 - px(dialog, config.PROFILE_CONFIRM_FROM_CENTER),
+           h - px(dialog, config.DIALOG_BUTTON_FROM_BOTTOM))
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +746,7 @@ def _open_room_menu(room_name: str, background: bool = False) -> int:
     if room is None:
         raise UIError(f"Chat window '{room_name}' not found (open it first)")
     w, _ = _size(room)
-    x, y = w - config.ROOM_MENU_ICON_OFFSET[0], config.ROOM_MENU_ICON_OFFSET[1]
+    x, y = w - px(room, config.ROOM_MENU_ICON_OFFSET[0]), px(room, config.ROOM_MENU_ICON_OFFSET[1])
     menu = None
     for attempt in range(config.BACKGROUND_CLICK_ATTEMPTS if background else 1):
         if attempt:
@@ -808,7 +811,7 @@ def leave_room(room_name: str) -> Dict:
     # the "위 내용을 모두 확인하였습니다." checkbox is ticked.
     ack = ocr.find_line(lines, "위 내용을 모두 확인하였습니다", threshold=0.7)
     if ack:
-        _click(dialog, ack["x"] - config.LEAVE_ACK_CHECK_OFFSET, ack["cy"])
+        _click(dialog, ack["x"] - px(dialog, config.LEAVE_ACK_CHECK_OFFSET), ack["cy"])
     _click(dialog, btn["cx"], btn["cy"])
     gone = _wait_for(lambda: True if not (room and win32gui.IsWindow(room)
                                           and win32gui.IsWindowVisible(room)) else None, timeout=5)
@@ -908,20 +911,21 @@ def create_openchat(name: str, description: str = "", topic: str = "자유수다
 
         if kakao_profile_only:
             opt = _find_on_form(form, "기본프로필만 참여 허용")
-            _click(form, config.FORM_OPTION_CHECK_X, opt["cy"])
+            _click(form, px(form, config.FORM_OPTION_CHECK_X), opt["cy"])
         if not searchable:
             opt = _find_on_form(form, "검색 허용")
-            _click(form, config.FORM_OPTION_CHECK_X, opt["cy"])
+            _click(form, px(form, config.FORM_OPTION_CHECK_X), opt["cy"])
 
         w, h = _size(form)
         exclude = _kakao_windows()
-        _click(form, w / 2 + config.FORM_CONFIRM_FROM_CENTER, h - config.DIALOG_BUTTON_FROM_BOTTOM)
+        _click(form, w / 2 + px(form, config.FORM_CONFIRM_FROM_CENTER), h - px(form, config.DIALOG_BUTTON_FROM_BOTTOM))
     except Exception:
         # Leave nothing half-filled behind
         if win32gui.IsWindow(form):
             w, h = _size(form)
             try:
-                _click(form, w - config.FORM_CANCEL_FROM_RIGHT, h - config.DIALOG_BUTTON_FROM_BOTTOM)
+                _click(form, w - px(form, config.FORM_CANCEL_FROM_RIGHT),
+                       h - px(form, config.DIALOG_BUTTON_FROM_BOTTOM))
             except Exception:
                 pass
         raise

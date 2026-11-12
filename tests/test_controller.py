@@ -637,21 +637,23 @@ def test_background_read_gives_up_when_nothing_is_copied(mock_copy, mock_save, m
 
 
 class TestLinkConfirmation:
-    """Leftover link confirmations are told by shape (no OCR) and closed with WM_CLOSE."""
+    """Leftover link confirmations are told by shape + the "주의" template (no OCR)
+    and closed with WM_CLOSE."""
     ROOM = 11
 
-    def _windows(self, wins, dpi=96, room_title="방"):
+    def _windows(self, wins, scale=1.0, room_title="방", heading=lambda h: True):
         """wins: {hwnd: (title, cls, owner, (w, h))}"""
+        from kakao_mcp import screen, templates
         gui = patch.object(controller, "win32gui").start()
-        u32 = patch.object(controller, "_user32").start()
         patch.object(controller.time, "sleep").start()
+        patch.object(screen, "dpi_scale", return_value=scale).start()
+        self.tpl = patch.object(templates, "window_matches", side_effect=lambda h, name: heading(h)).start()
         gui.GetWindowText.side_effect = lambda h: room_title if h == self.ROOM else wins[h][0]
         gui.GetClassName.side_effect = lambda h: wins[h][1]
         gui.GetWindow.side_effect = lambda h, _: wins[h][2]
         gui.GetWindowRect.side_effect = lambda h: (10, 20, 10 + wins[h][3][0], 20 + wins[h][3][1])
         gui.IsWindow.return_value = True
         gui.IsWindowVisible.return_value = False
-        u32.GetDpiForWindow.return_value = dpi
         patch.object(controller, "_top_windows", return_value={h: (1, wins[h][0]) for h in wins}).start()
         return gui
 
@@ -659,23 +661,30 @@ class TestLinkConfirmation:
         patch.stopall()
 
     def test_matching_dialog_is_closed(self):
-        gui = self._windows({5: ("", "EVA_Window_Dblclk", self.ROOM, (260, 178))})
+        gui = self._windows({5: ("", "EVA_Window_Dblclk", self.ROOM, (262, 182))})
         closed = controller.close_link_dialogs(self.ROOM)
         assert len(closed) == 1 and "'방'" in closed[0]
         gui.PostMessage.assert_called_once_with(5, controller.win32con.WM_CLOSE, 0, 0)
+        self.tpl.assert_called_once_with(5, config.LINK_DIALOG_TEMPLATE)
 
-    def test_other_windows_are_left_alone(self):
-        gui = self._windows({
-            5: ("", "EVA_Window_Dblclk", 99, (260, 178)),        # another room's dialog
-            6: ("방", "EVA_Window_Dblclk", self.ROOM, (260, 178)),  # titled
-            7: ("", "EVA_Menu", self.ROOM, (260, 178)),           # the room menu
-            8: ("", "EVA_Window_Dblclk", self.ROOM, (360, 230)),  # a different dialog
-        })
+    def test_leave_confirmation_of_the_same_size_is_left_alone(self):
+        """1:1 rooms' "채팅방을 나가시겠어요?" is 260x178 too, but has no "주의" heading."""
+        gui = self._windows({5: ("", "EVA_Window_Dblclk", self.ROOM, (260, 178))}, heading=lambda h: False)
         assert controller.close_link_dialogs(self.ROOM) == []
         assert not gui.PostMessage.called
 
+    def test_other_windows_are_left_alone(self):
+        gui = self._windows({
+            5: ("", "EVA_Window_Dblclk", 99, (262, 182)),        # another room's dialog
+            6: ("방", "EVA_Window_Dblclk", self.ROOM, (262, 182)),  # titled
+            7: ("", "EVA_Menu", self.ROOM, (262, 182)),           # the room menu
+            8: ("", "EVA_Window_Dblclk", self.ROOM, (260, 216)),  # group leave confirmation
+        })
+        assert controller.close_link_dialogs(self.ROOM) == []
+        assert not gui.PostMessage.called and not self.tpl.called  # shape fails first, no shot
+
     def test_size_follows_display_scale(self):
-        self._windows({5: ("", "EVA_Window_Dblclk", self.ROOM, (390, 267))}, dpi=144)
+        self._windows({5: ("", "EVA_Window_Dblclk", self.ROOM, (393, 273))}, scale=1.5)
         assert controller.is_link_confirmation(5, owner=self.ROOM)
-        self._windows({5: ("", "EVA_Window_Dblclk", self.ROOM, (390, 267))}, dpi=96)
+        self._windows({5: ("", "EVA_Window_Dblclk", self.ROOM, (393, 273))}, scale=1.0)
         assert not controller.is_link_confirmation(5, owner=self.ROOM)

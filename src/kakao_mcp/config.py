@@ -51,6 +51,18 @@ BACKGROUND_CLICK_RETRY_SEC = 1.5
 # Link confirmation ("주의 … 이 링크에 연결할까요?"): untitled EVA_Window_Dblclk owned by the room
 LINK_DIALOG_SIZE = (261, 180)  # at 100% display scale; measured 260x178 and 262x182 on two PCs
 LINK_DIALOG_SIZE_TOLERANCE = 6  # px
+LINK_DIALOG_TEMPLATE = "link_warning"  # its "주의" heading; a leave confirmation has the room name there
+
+# Templates (templates.py): reference images matched by their dark pixels
+TEMPLATE_INK_LUMA = 128  # darker than this counts as ink
+TEMPLATE_MAX_SHIFT = 3  # px searched around the expected spot
+TEMPLATE_MAX_MISMATCH = 0.4  # share of the template ink allowed to differ (other text scores ~1.0)
+
+# Menus (EVA_Menu) driven by posted Down / Enter (screen.menu_select)
+MENU_HIGHLIGHT_MIN_DIFF = 8  # gray-level change that marks the highlighted row
+MENU_ROW_TOLERANCE = 8  # px between the highlighted row center and the target
+MENU_MAX_ENTRIES = 12
+MENU_KEY_WAIT_SEC = 1.0  # for the highlight to move after a key
 
 # Window and focus timing
 WINDOW_ACTIVATE_WAIT_SEC = 0.15  # Was 0.2 — after bring_window_to_front
@@ -82,7 +94,7 @@ MENTION_SELECT_WAIT_SEC = 0.3  # Was 0.5 — after Enter to select
 MENTION_PASTE_WAIT_SEC = 0.2  # Was 0.3 — after Ctrl+V
 MENTION_SEND_WAIT_SEC = 0.3  # Was 0.5 — after final Enter
 
-# Open chat (window-relative pixels, KakaoTalk PC 26.9 at 100% display scale)
+# Open chat (window-relative pixels, KakaoTalk PC 26.9 at 100% display scale; screen.px scales them)
 MAIN_CHAT_TAB_POS = (32, 118)  # left sidebar chat tab
 MAIN_OPENCHAT_ICON_OFFSET = (72, 57)  # open-chat icon: (from right edge, y)
 OPENCHAT_BACK_POS = (28, 47)  # back arrow in search view
@@ -112,8 +124,7 @@ BOARD_META_MIN_LUMA = 90  # meta lines are gray (~118), titles near-black
 BOARD_TITLE_GAP = 25  # px between lines that still belong to one title
 BOARD_SCROLL_NOTCHES = 3
 BOARD_NAV_WAIT_SEC = 0.8
-BOARD_MENU_ITEM_FROM_BOTTOM = 188  # 톡게시판 in the room ≡ menu, px above its bottom edge (1:1 and group rooms alike)
-BOARD_MENU_ITEM_X = 112
+BOARD_MENU_ITEM_FROM_BOTTOM = 189  # 톡게시판 row center in the room ≡ menu, px above its bottom edge (1:1 and group rooms alike)
 
 # Default output directory for downloaded images
 DEFAULT_IMAGE_OUTPUT_DIR = os.path.join(
