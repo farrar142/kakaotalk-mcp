@@ -263,3 +263,48 @@ class TestLeaveMenu:
         select.assert_called_once_with(7, "채팅방 나가기")
         menu.assert_called_once_with("room", background=True)
         click.assert_not_called()
+
+
+class TestLeaveDialogLayout:
+    """Open chat leave confirmations are answered at fixed spots with posted clicks."""
+
+    def _layout(self, size):
+        with patch.object(openchat, "_size", return_value=size), \
+                patch.object(openchat, "dpi_scale", return_value=1.0):
+            return openchat._leave_dialog_layout(5)
+
+    def test_known_sizes(self):
+        assert self._layout((260, 210)) == {"leave": (65, 25)}
+        assert "ack" in self._layout((260, 312))
+        assert self._layout((260, 216)) is None  # group room: "조용히 나가기" too, OCR path
+        assert self._layout((260, 178)) is None  # 1:1 room
+
+    def _confirm(self, spots, ticks=True, room_closes=True):
+        shots = iter([Image.new("L", (260, 312), 255)] + [Image.new("L", (260, 312), 0 if ticks else 255)] * 9)
+        with patch.object(openchat, "_size", return_value=(260, 312)), \
+                patch.object(openchat, "px", side_effect=lambda h, v: v), \
+                patch.object(openchat.ocr, "grab_window", side_effect=lambda h: next(shots)), \
+                patch.object(openchat, "_post_click") as click, \
+                patch.object(openchat, "_wait_for", return_value=True if room_closes else None), \
+                patch.object(openchat, "_is_open", return_value=True), \
+                patch.object(openchat.win32gui, "PostMessage") as post:
+            try:
+                return openchat._confirm_leave_by_layout(1, "room", 5, spots), click, post
+            except openchat.UIError as e:
+                return e, click, post
+
+    def test_member_presses_leave_only(self):
+        result, click, _ = self._confirm({"leave": (65, 25)})
+        assert result["success"] and result["room_closed"] is False
+        click.assert_called_once_with(5, 65, 312 - 25)
+
+    def test_owner_ticks_the_checkbox_first(self):
+        result, click, _ = self._confirm({"leave": (65, 25), "ack": (35, 86)})
+        assert result["room_closed"] is True
+        assert [c.args for c in click.call_args_list] == [(5, 35, 312 - 86), (5, 65, 312 - 25)]
+
+    def test_untickable_checkbox_leaves_nothing(self):
+        err, click, post = self._confirm({"leave": (65, 25), "ack": (35, 86)}, ticks=False)
+        assert isinstance(err, openchat.UIError)
+        assert all(c.args[1:] == (35, 312 - 86) for c in click.call_args_list)  # never "나가기"
+        post.assert_called_once_with(5, openchat.WM_CLOSE, 0, 0)

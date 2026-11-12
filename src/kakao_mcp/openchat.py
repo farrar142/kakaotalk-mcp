@@ -38,6 +38,7 @@ import win32api
 import win32clipboard
 import win32gui
 import win32process
+from PIL import ImageChops
 
 from . import config, controller, ocr
 from .screen import dpi_scale, px, room_menu_select
@@ -854,6 +855,50 @@ def get_room_link(room_name: str) -> Dict:
     return {"success": True, "room_name": room_name, "url": url}
 
 
+def _leave_dialog_layout(dialog: int) -> Optional[Dict]:
+    w, h = (v / dpi_scale(dialog) for v in _size(dialog))
+    tol = config.LEAVE_DIALOG_SIZE_TOLERANCE
+    return next((spots for (lw, lh), spots in config.LEAVE_DIALOGS.items()
+                 if abs(w - lw) <= tol and abs(h - lh) <= tol), None)
+
+
+def _confirm_leave_by_layout(room: int, room_name: str, dialog: int, spots: Dict) -> Dict:
+    """Tick the owner's checkbox (if any) and press "나가기" at their fixed spots, with
+    posted clicks (nothing comes to the front)."""
+    _, h = _size(dialog)
+
+    def at(name):
+        x, from_bottom = spots[name]
+        return px(dialog, x), h - px(dialog, from_bottom)
+
+    owner = "ack" in spots
+    if owner:
+        x, y = at("ack")
+        r = px(dialog, 10)
+        box = tuple(round(v) for v in (x - r, y - r, x + r, y + r))
+        before = ocr.grab_window(dialog).crop(box)
+        for _ in range(config.BACKGROUND_CLICK_ATTEMPTS):
+            _post_click(dialog, x, y)
+            if ImageChops.difference(before.convert("L"),
+                                     ocr.grab_window(dialog).crop(box).convert("L")).getbbox():
+                break
+        else:
+            win32gui.PostMessage(dialog, WM_CLOSE, 0, 0)
+            raise UIError("The owner's '위 내용을 모두 확인하였습니다.' checkbox did not tick; left nothing")
+    gone = None
+    for _ in range(config.BACKGROUND_CLICK_ATTEMPTS):
+        _post_click(dialog, *at("leave"))
+        gone = _wait_for(lambda: None if _is_open(room) else True, timeout=3)
+        if gone:
+            break
+    if not gone:
+        if _is_open(dialog):
+            win32gui.PostMessage(dialog, WM_CLOSE, 0, 0)
+        return {"success": False, "error": f"Room window '{room_name}' is still open after leaving"}
+    msg = f"Left chat room '{room_name}'" + (" (owner left: the room was closed)" if owner else "")
+    return {"success": True, "was_member": True, "room_closed": owner, "message": msg}
+
+
 def leave_room(room_name: str) -> Dict:
     """Leave a chat room (open chat or regular) via its menu, confirming the dialog."""
     room = controller.find_chat_window(room_name)
@@ -875,6 +920,9 @@ def leave_room(room_name: str) -> Dict:
     if not dialog:
         raise UIError("Leave confirmation dialog did not appear")
     time.sleep(0.3)
+    known = _leave_dialog_layout(dialog)
+    if known:
+        return _confirm_leave_by_layout(room, room_name, dialog, known)
     lines = _ocr_window(dialog)
     w, h = _size(dialog)
     btn = ocr.find_line([ln for ln in lines if ln["y"] > h - 60], "나가기")

@@ -113,6 +113,15 @@ FORM_OPTION_CHECK_X = 32  # radio/checkbox column on the create form
 FORM_CONFIRM_FROM_CENTER = 69  # "확인" sits right of the form center
 FORM_CANCEL_FROM_RIGHT = 62
 LEAVE_ACK_CHECK_OFFSET = 20  # owner-leave checkbox sits left of its label
+# Open chat leave confirmations (untitled, owned by the room), by size at 100% scale:
+# "나가기" button and, for the owner, the "위 내용을 모두 확인하였습니다." checkbox that
+# enables it, as (x, px above the bottom edge). Other leave dialogs (1:1 260x178,
+# group 260x216 with "조용히 나가기") are read with OCR.
+LEAVE_DIALOGS = {
+    (260, 210): {"leave": (65, 25)},  # open chat member
+    (260, 312): {"leave": (65, 25), "ack": (35, 86)},  # open chat owner: the room is closed
+}
+LEAVE_DIALOG_SIZE_TOLERANCE = 2  # 210 vs the group room's 216
 
 # Room board (톡게시판) window
 BOARD_BACK_POS = (28, 47)  # ← in 상세보기
