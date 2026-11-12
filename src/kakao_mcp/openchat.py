@@ -76,6 +76,11 @@ class UIError(Exception):
     """A KakaoTalk UI step failed (window missing, unexpected dialog, ...)."""
 
 
+class KakaoProfileOnly(UIError):
+    """The room accepts only the KakaoTalk profile; a random/nickname join was refused."""
+    error_code = "kakao_profile_only"
+
+
 class EmptyRoomMenu(UIError):
     """The room's ≡ menu opened with no items: KakaoTalk does not count us as a member."""
 
@@ -773,8 +778,23 @@ def _joined(room: int, already: bool) -> Dict:
     }
 
 
+def _has_profile_choice(dialog: int) -> bool:
+    w, h = (v / dpi_scale(dialog) for v in _size(dialog))
+    cw, ch = config.PROFILE_DIALOG_WITH_CHOICE
+    tol = config.PROFILE_DIALOG_SIZE_TOLERANCE
+    return abs(w - cw) <= tol and abs(h - ch) <= tol
+
+
 def _confirm_profile(dialog: int, profile: str, nickname: Optional[str] = None):
     w, h = _size(dialog)
+    if profile == "random" and not _has_profile_choice(dialog):
+        # Confirming would join with the real KakaoTalk profile; cancel instead
+        win32gui.PostMessage(dialog, WM_CLOSE, 0, 0)
+        _wait_for(lambda: None if _is_open(dialog) else True, 2)
+        raise KakaoProfileOnly(
+            f"This room allows only the KakaoTalk profile ({w}x{h} 프로필 설정 without the random "
+            "profile choice); not joined, because a random profile / nickname was asked for. "
+            "Join with profile='kakao' only if the user agrees to show their KakaoTalk profile.")
     if profile == "random":
         _click(dialog, *(px(dialog, v) for v in config.PROFILE_RANDOM_RADIO_POS))
     if nickname:

@@ -379,3 +379,52 @@ class TestCreateForm:
             assert openchat._open_create_form(3) == 42
         click.assert_called_once_with(3, 365, 161)
         assert not ocr_.called
+
+
+class TestKakaoProfileOnly:
+    """A "기본프로필만 참여 허용" room shows 프로필 설정 without the random choice (300x251);
+    confirming it with a nickname joins with the real KakaoTalk profile."""
+
+    def _confirm(self, size, profile, nickname=None):
+        with patch.object(openchat, "_size", return_value=size), \
+                patch.object(openchat, "dpi_scale", return_value=1.0), \
+                patch.object(openchat, "px", side_effect=lambda h, v: v), \
+                patch.object(openchat, "_click") as click, \
+                patch.object(openchat, "_children", return_value=[11]), \
+                patch.object(openchat.win32gui, "GetClassName", return_value="Edit"), \
+                patch.object(openchat, "_set_text"), \
+                patch.object(openchat, "_get_text", side_effect=lambda h: nickname), \
+                patch.object(openchat, "_is_open", return_value=False), \
+                patch.object(openchat.win32gui, "PostMessage") as post, \
+                patch.object(openchat.time, "sleep"):
+            try:
+                openchat._confirm_profile(5, profile, nickname)
+                return None, click, post
+            except openchat.UIError as e:
+                return e, click, post
+
+    def test_nickname_join_is_cancelled(self):
+        err, click, post = self._confirm((300, 251), "random", "mcp측정")
+        assert isinstance(err, openchat.KakaoProfileOnly) and err.error_code == "kakao_profile_only"
+        click.assert_not_called()
+        post.assert_called_once_with(5, openchat.WM_CLOSE, 0, 0)
+
+    def test_kakao_profile_join_is_confirmed(self):
+        err, click, post = self._confirm((300, 251), "kakao")
+        assert err is None and click.call_count == 1 and not post.called
+
+    def test_nickname_join_with_the_choice_goes_on(self):
+        err, click, _ = self._confirm((300, 307), "random", "mcp측정")
+        assert err is None and click.call_count == 2  # random radio, then 확인
+
+    def test_server_reports_the_code(self):
+        from kakao_mcp import server
+
+        def join(*a, **k):
+            raise openchat.KakaoProfileOnly("only the KakaoTalk profile")
+
+        with patch.object(server.controller, "is_kakaotalk_running", return_value={"running": True}), \
+                patch.object(openchat, "_kakao_windows", return_value=set()), \
+                patch.object(openchat, "check_rate_limit"):
+            result = server._openchat_call(join)
+        assert result["error_code"] == "kakao_profile_only"

@@ -504,7 +504,8 @@ def _openchat_call(fn, *args, **kwargs) -> Dict:
         return {"error_code": "rate_limited", "error": str(e),
                 "dialog_text": e.dialog_text, "dialog_closed": e.dialog_closed}
     except openchat.UIError as e:
-        return {"error": str(e)}
+        code = getattr(e, "error_code", None)
+        return {"error_code": code, "error": str(e)} if code else {"error": str(e)}
     except Exception as e:
         return {"error": f"{fn.__name__} failed: {e}"}
 
@@ -563,6 +564,11 @@ def kakao_openchat_join(
     short time) the result is {"error_code": "rate_limited", "error",
     "dialog_text", "dialog_closed"}; wait before trying again. The other open
     chat tools report the same way if the dialog appears.
+
+    Rooms that allow only the KakaoTalk profile ("기본프로필만 참여 허용") ignore
+    a nickname / random profile; such a join is cancelled with
+    {"error_code": "kakao_profile_only"} instead of revealing the KakaoTalk
+    profile. Retry with profile="kakao" only if the user agrees.
     """
     return _openchat_call(
         openchat.join_openchat, query, title=title, index=index, profile=profile, passcode=passcode,

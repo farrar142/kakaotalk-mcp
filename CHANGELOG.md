@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 모든 UI 조작 도구와 백그라운드 수집이 하나의 잠금(`UI_LOCK`)을 공유
 
 ### Fixed
+- 「기본프로필만 참여 허용」 오픈채팅에 닉네임·랜덤 프로필로 참여하면 닉네임이 무시되고 카카오톡 프로필로 조용히 참여되던 문제: 프로필 선택이 없는 프로필 설정 창(300x251)이면 취소하고 `error_code: "kakao_profile_only"`로 알림(kakaomcp 세션이 발견)
 - 다른 방의 대화가 엉뚱한 방 이름으로 저장되던 문제: 클립보드와 포커스는 프로세스 사이에 공유되는데 UI 잠금은 프로세스 안에서만
   걸려, 다른 프로세스가 동시에 대화를 복사하면 섞였음
   - UI 잠금에 이름 있는 뮤텍스(`Local\kakaotalk-mcp-ui`)를 더해 다른 서버/스크립트와도 순서대로 실행

@@ -107,6 +107,11 @@ OPENCHAT_RESULTS_WAIT_SEC = 1.0
 OPENCHAT_PREVIEW_BUTTON_FROM_BOTTOM = 41  # "오픈채팅 참여하기" button
 PROFILE_RANDOM_RADIO_POS = (268, 155)  # "프로필 설정" random-nickname radio
 PROFILE_CONFIRM_FROM_CENTER = 14  # "확인" sits left of the dialog center
+# "프로필 설정" with the KakaoTalk / random profile choice (300x307 at 100%). Rooms that
+# allow only the KakaoTalk profile show it without the choice (300x251), and a nickname
+# typed there is ignored: such a dialog is never confirmed for a random/nickname join.
+PROFILE_DIALOG_WITH_CHOICE = (300, 307)
+PROFILE_DIALOG_SIZE_TOLERANCE = 3
 DIALOG_BUTTON_FROM_BOTTOM = 41
 ROOM_MENU_ICON_OFFSET = (22, 57)  # chat room ≡ menu: (from right edge, y)
 FORM_OPTION_CHECK_X = 32  # radio/checkbox column on the create form
