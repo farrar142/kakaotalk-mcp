@@ -41,10 +41,11 @@ OCR(Windows.Media.Ocr)은 느리고(창마다 수백 ms), 화면 배율·테마�
 ### 메시지 읽기·기록 (가장 먼저 — 5분마다 도는 기록에 걸림)
 
 - [x] `close_link_dialogs` — 방 위에 남은 링크 확인창 → **W** + **K**(2026-11-12)
-  - `controller.is_link_confirmation`: 제목 없는 `EVA_Window_Dblclk`, 소유자가 그 방, 크기 260x178(±6px, `GetDpiForWindow`로 배율 환산) → `WM_CLOSE`(=취소)
+  - `controller.is_link_confirmation`: 제목 없는 `EVA_Window_Dblclk`, 소유자가 그 방, 크기 261x180(±6px, `GetDpiForWindow`로 배율 환산) → `WM_CLOSE`(=취소)
   - `LinkGuard`가 작업 중 새로 뜬 카톡 창을 닫을 때도 OCR '취소' 대신 `WM_CLOSE`
-  - 이 PC 실제 창(메인·방 3개·광고 390x100)에는 오판 없음. **실제 링크 확인창으로는 아직 시험 안 함**
-  - 확인창을 띄워 보려다 실패(2026-11-12, 김한얼 방): `https://example.com`과 `http://192.0.2.1`은 둘 다 확인창 없이 바로 브라우저로 열림(Chrome 번역 팝업 282x101도 오판 없음). 어떤 링크에 "주의"가 뜨는지 알아내면 크기를 실제로 재 본다
+  - 이 PC 실제 창(메인·방 3개·광고 390x100, Chrome 번역 팝업 282x101)에는 오판 없음
+  - 실물 확인(2026-11-12, 단톡방의 ubuntu.com 링크 미리보기 클릭): 확인창 262x182(kakaomcp PC에선 260x178)를 확인창으로 알아보고 `WM_CLOSE`로 닫음 — 브라우저 안 열림, 맨 앞 창 그대로
+  - 모든 링크에 확인창이 뜨지는 않는다: `https://example.com`·`http://192.0.2.1`은 확인창 없이 바로 브라우저로 열림
 
 ### 톡게시판 — `board.py` (`kakao_read_board`)
 

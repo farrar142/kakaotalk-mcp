@@ -49,7 +49,7 @@ BACKGROUND_CLICK_ATTEMPTS = 4  # posted clicks are now and then ignored; checked
 BACKGROUND_CLICK_RETRY_SEC = 1.5
 
 # Link confirmation ("주의 … 이 링크에 연결할까요?"): untitled EVA_Window_Dblclk owned by the room
-LINK_DIALOG_SIZE = (260, 178)  # at 100% display scale
+LINK_DIALOG_SIZE = (261, 180)  # at 100% display scale; measured 260x178 and 262x182 on two PCs
 LINK_DIALOG_SIZE_TOLERANCE = 6  # px
 
 # Window and focus timing
