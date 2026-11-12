@@ -130,6 +130,10 @@ FORM_TOPIC_POS = {  # chip centers in that view (template "form_topics")
 FORM_OPTION_POS = {  # checkboxes on the form scrolled to the bottom (template "form_join_settings")
     "기본프로필만 참여 허용": (32, 233), "검색 허용": (32, 389),
 }
+# Join dialogs still read with OCR (community, SafeBot, 이용자보호조치, passcode, unexpected)
+# are recorded when seen: size + the bottom band (buttons only) as a grayscale PNG under
+# DATA_DIR/dialogs, once per kind and size. Local only; used to replace the OCR later.
+DIALOG_CAPTURE_BAND = 70
 FORM_SUBMIT_WAIT_SEC = 4.0  # after "확인": the form closes or a dialog shows up
 FORM_TOGGLE_RADIUS = 10  # around a chip/checkbox center: its look changes when toggled
 LEAVE_ACK_CHECK_OFFSET = 20  # owner-leave checkbox sits left of its label

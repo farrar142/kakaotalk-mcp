@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `kakao_read_messages`와 키워드 모니터가 읽은 메시지도 저장
 - `kakao_read_board` — 톡게시판(공지 / 일정 / 투표 / 퀴즈) 글 목록과 본문 읽기
 - 오픈채팅 도구가 카카오 「이용자보호조치」(짧은 시간에 여러 방 참여) 제한 창을 따로 알려 줌: `error_code: "rate_limited"`, `dialog_text`, `dialog_closed`. 창은 「닫기」로 닫음
+- 오픈채팅 참여 중 아직 OCR로 읽는 창(커뮤니티 동의·세이프봇·이용자보호조치·참여 코드·예상 밖 창)이 뜨면 크기와 버튼 줄 그림을 `%LOCALAPPDATA%\kakaotalk-mcp\dialogs`에 남김(종류·크기마다 한 번, 외부 전송 없음)
 - 백그라운드 읽기: 메시지 읽기가 채팅방 창을 앞으로 가져오지 않는다(최소화된 창도 읽음)
   - Ctrl+A/C를 메시지 목록에 `PostMessage`로 직접 보내고, Ctrl은 카카오톡 입력 스레드의 키보드 상태로 눌러 둔다
   - 정해진 대기 대신 클립보드 시퀀스 번호가 바뀌는 순간 읽는다

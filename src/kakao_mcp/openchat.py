@@ -116,6 +116,33 @@ def _close_rate_limit(dialog: int, text: str) -> "RateLimited":
     return RateLimited(text, dialog_closed=not _is_open(dialog))
 
 
+def _capture_dialog(hwnd: int, kind: str):
+    """Keep the size and the button band of a dialog still handled with OCR (see
+    ``config.DIALOG_CAPTURE_BAND``). Never raises; skips kinds+sizes already kept."""
+    try:
+        import json
+        from .auth.config import DATA_DIR
+        w, h = _size(hwnd)
+        scale = dpi_scale(hwnd)
+        folder = DATA_DIR / "dialogs"
+        png = folder / f"{kind}_{w}x{h}.png"
+        if png.exists():
+            return
+        folder.mkdir(parents=True, exist_ok=True)
+        band = round(config.DIALOG_CAPTURE_BAND * scale)
+        shot = ocr.grab_window(hwnd)
+        shot.crop((0, max(0, shot.height - band), shot.width, shot.height)).convert("L").save(png)
+        entry = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": kind, "size": [w, h],
+                 "scale": scale, "class": win32gui.GetClassName(hwnd),
+                 "titled": bool(win32gui.GetWindowText(hwnd)),
+                 "children": [win32gui.GetClassName(c) for c in _children(hwnd, direct=False)],
+                 "png": png.name}
+        with open(folder / "index.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def check_rate_limit(before: Set[int]):
     """Raise RateLimited if an 이용자보호조치 dialog appeared since ``before`` (closing it)."""
     for h in _kakao_windows() - before:
@@ -126,6 +153,7 @@ def check_rate_limit(before: Set[int]):
             continue
         text = _ocr_text(h)
         if is_rate_limit_text(text):
+            _capture_dialog(h, "rate_limit")
             raise _close_rate_limit(h, text)
 
 
@@ -679,6 +707,7 @@ def _answer_join_dialogs(preview: int, before: Set[int], handled: Set[int], room
                 handled.add(dialog)
             elif dtitle == COMMUNITY_DIALOG_TITLE:
                 time.sleep(0.4)
+                _capture_dialog(dialog, "community")
                 _answer_dialog(dialog, "동의" if accept_community else "취소")
                 handled.add(dialog)
                 if not accept_community:
@@ -686,6 +715,7 @@ def _answer_join_dialogs(preview: int, before: Set[int], handled: Set[int], room
                     return _decline(room_title, f"{COMMUNITY_DIALOG_TITLE} (messages are public and "
                                                 "searchable, kept 90 days)", "accept_community")
             elif dtitle and ocr.similarity(dtitle, room_title) < 0.75 and _owner(dialog) == preview:
+                _capture_dialog(dialog, "unexpected_titled")
                 raise UIError(f"Unexpected dialog '{dtitle}' while joining: {_ocr_text(dialog)}")
             elif dtitle:
                 continue  # a titled window: possibly the room, checked below
@@ -693,8 +723,10 @@ def _answer_join_dialogs(preview: int, before: Set[int], handled: Set[int], room
                 time.sleep(0.4)
                 text = _ocr_text(dialog)
                 if is_rate_limit_text(text):
+                    _capture_dialog(dialog, "rate_limit")
                     raise _close_rate_limit(dialog, text)
                 if ocr.normalize("세이프봇") in ocr.normalize(text):
+                    _capture_dialog(dialog, "safebot")
                     _answer_dialog(dialog, "동의하고 참여" if accept_safebot else "취소")
                     handled.add(dialog)
                     if not accept_safebot:
@@ -702,6 +734,7 @@ def _answer_join_dialogs(preview: int, before: Set[int], handled: Set[int], room
                         return _decline(room_title, f"{SAFEBOT_DIALOG_TEXT} (SafeBot may hide messages "
                                                     "under Kakao's policy)", "accept_safebot")
                 elif "코드" in text and passcode and not passcode_sent:
+                    _capture_dialog(dialog, "passcode")
                     edits = [c for c in _children(dialog, direct=False)
                              if win32gui.GetClassName(c) == "Edit"]
                     if not edits:
@@ -712,6 +745,7 @@ def _answer_join_dialogs(preview: int, before: Set[int], handled: Set[int], room
                     passcode_sent = True
                     handled.add(dialog)
                 else:
+                    _capture_dialog(dialog, "unexpected")
                     raise UIError(f"Unexpected dialog while joining: {text}")
         room = _find_titled_window(room_title, {preview})
         if room and not preview_open and _user32.GetForegroundWindow() == room:

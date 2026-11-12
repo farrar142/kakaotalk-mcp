@@ -428,3 +428,28 @@ class TestKakaoProfileOnly:
                 patch.object(openchat, "check_rate_limit"):
             result = server._openchat_call(join)
         assert result["error_code"] == "kakao_profile_only"
+
+
+class TestCaptureDialog:
+    def test_button_band_kept_once_per_kind_and_size(self, tmp_path):
+        import json
+        from kakao_mcp.auth import config as auth_config
+        shot = Image.new("RGB", (260, 210), (255, 255, 255))
+        with patch.object(auth_config, "DATA_DIR", tmp_path), \
+                patch.object(openchat, "_size", return_value=(260, 210)), \
+                patch.object(openchat, "dpi_scale", return_value=1.0), \
+                patch.object(openchat.ocr, "grab_window", return_value=shot) as grab, \
+                patch.object(openchat.win32gui, "GetClassName", return_value="EVA_Window_Dblclk"), \
+                patch.object(openchat.win32gui, "GetWindowText", return_value=""), \
+                patch.object(openchat, "_children", return_value=[]):
+            openchat._capture_dialog(5, "safebot")
+            openchat._capture_dialog(5, "safebot")
+        png = tmp_path / "dialogs" / "safebot_260x210.png"
+        assert Image.open(png).size == (260, 70)
+        assert grab.call_count == 1
+        lines = (tmp_path / "dialogs" / "index.jsonl").read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1 and json.loads(lines[0])["size"] == [260, 210]
+
+    def test_never_raises(self):
+        with patch.object(openchat, "_size", side_effect=RuntimeError("gone")):
+            openchat._capture_dialog(5, "unexpected")
