@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 화면 배율 보정(`screen.dpi_scale` / `px`): 고정 좌표를 창의 DPI에 맞춰 환산
 - 메뉴 키보드 선택(`screen.menu_select`): ↓를 보내며 강조된 줄을 확인하고 목표 줄일 때만 Enter. 톡게시판 열기가 클릭 대신 이것을 씀(클릭은 가끔 무시됐음)
 - 방 메뉴 배치표(`config.ROOM_MENU_LAYOUTS`, `screen.room_menu_select`): 메뉴 크기로 배치를 고르고, '채팅방 나가기'는 글자 템플릿으로 확인한 줄만 고른다(오픈채팅 참여자 메뉴는 방장의 '나가기' 자리에 '신고하고 나가기'가 있음). 모르는 메뉴는 쓰지 않음
+- 오픈채팅 만들기: '+ 만들기'·주제 칩·옵션·'확인'을 템플릿으로 화면을 확인한 뒤 고정 위치에 게시된 클릭으로(화면이 다르면 예전처럼 OCR). '확인'은 응답이 보이면 다시 누르지 않음
 - `kakao_get_room_link`, `kakao_leave_room`이 방을 앞으로 가져오지 않는다: 메뉴는 ↓키로, 오픈채팅 나가기 확인(방장 체크박스 포함)은 고정 위치에 게시된 클릭으로
 - `kakao_openchat_join`의 `accept_safebot` — "세이프봇 적용 동의" 창을 "동의하고 참여"로 넘김 (기본은 "취소" 후 중단)
 

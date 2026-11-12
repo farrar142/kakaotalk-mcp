@@ -308,3 +308,74 @@ class TestLeaveDialogLayout:
         assert isinstance(err, openchat.UIError)
         assert all(c.args[1:] == (35, 312 - 86) for c in click.call_args_list)  # never "나가기"
         post.assert_called_once_with(5, openchat.WM_CLOSE, 0, 0)
+
+
+class TestCreateForm:
+    """'+ 만들기', topic chips, options and '확인' with posted clicks at fixed spots."""
+
+    def test_topic_spots_cover_every_topic(self):
+        assert set(openchat.config.FORM_TOPIC_POS) == set(openchat.TOPICS)
+
+    def test_confirm_is_not_clicked_again_once_something_appeared(self):
+        windows = iter([set(), {9}])
+        with patch.object(openchat, "_size", return_value=(422, 642)), \
+                patch.object(openchat, "px", side_effect=lambda h, v: v), \
+                patch.object(openchat, "_post_click") as click, \
+                patch.object(openchat, "_is_open", return_value=True), \
+                patch.object(openchat, "_kakao_windows", side_effect=lambda: next(windows, {9})), \
+                patch.object(openchat.time, "sleep"):
+            openchat._press_confirm(5, exclude=set())
+        click.assert_called_once_with(5, 211 + 69, 642 - 41)
+
+    def test_confirm_gives_up_without_a_response(self):
+        with patch.object(openchat, "_size", return_value=(422, 642)), \
+                patch.object(openchat, "px", side_effect=lambda h, v: v), \
+                patch.object(openchat, "_post_click") as click, \
+                patch.object(openchat, "_wait_for", return_value=None):
+            try:
+                openchat._press_confirm(5, exclude=set())
+                raise AssertionError("expected UIError")
+            except openchat.UIError:
+                pass
+        assert click.call_count == openchat.config.BACKGROUND_CLICK_ATTEMPTS
+
+    def _press(self, view_ok, toggles=True):
+        with patch.object(openchat, "_scroll_form") as scroll, \
+                patch.object(openchat.templates, "window_matches", return_value=view_ok), \
+                patch.object(openchat, "px", side_effect=lambda h, v: v), \
+                patch.object(openchat, "_toggle_at", return_value=toggles) as toggle, \
+                patch.object(openchat, "_find_on_form", return_value={"cx": 100, "cy": 200}) as find, \
+                patch.object(openchat, "_click") as click:
+            try:
+                openchat._press_on_form(5, "form_topics", 3, (160, 373), "재테크")
+                err = None
+            except openchat.UIError as e:
+                err = e
+        return scroll, toggle, find, click, err
+
+    def test_chip_at_its_spot_when_the_view_matches(self):
+        scroll, toggle, find, click, err = self._press(True)
+        scroll.assert_called_once_with(5, 3)
+        toggle.assert_called_once_with(5, 160, 373)
+        assert not find.called and not click.called and err is None
+
+    def test_ocr_when_the_view_does_not_match(self):
+        _, toggle, find, click, _ = self._press(False)
+        assert not toggle.called
+        click.assert_called_once_with(5, 100, 200)
+
+    def test_chip_that_never_toggles_is_an_error(self):
+        *_, err = self._press(True, toggles=False)
+        assert isinstance(err, openchat.UIError)
+
+    def test_make_button_by_template(self):
+        with patch.object(openchat, "_post_wheel"), \
+                patch.object(openchat, "px", side_effect=lambda h, v: v), \
+                patch.object(openchat.templates, "window_matches", return_value=True), \
+                patch.object(openchat, "_kakao_windows", return_value=set()), \
+                patch.object(openchat, "_post_click") as click, \
+                patch.object(openchat, "_wait_new_window", return_value=42), \
+                patch.object(openchat, "_ocr_window") as ocr_:
+            assert openchat._open_create_form(3) == 42
+        click.assert_called_once_with(3, 365, 161)
+        assert not ocr_.called

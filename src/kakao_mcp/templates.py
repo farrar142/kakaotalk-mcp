@@ -22,6 +22,9 @@ DIR = Path(__file__).parent / "templates"
 # name -> (x, y) of the template's top-left corner in its window, at 100% scale
 POSITIONS: Dict[str, Tuple[int, int]] = {
     "link_warning": (24, 27),  # "주의" heading of the link confirmation (262x182)
+    "openchat_make": (339, 154),  # "+ 만들기" on the open chat home (420x640) scrolled to the top
+    "form_topics": (20, 203),  # "채팅방 주제" on the create form scrolled 3 notches from the top
+    "form_join_settings": (20, 184),  # "참여 설정" on the create form scrolled to the bottom
 }
 
 # Menu row labels: name -> (x, y offset from the row's center), at 100% scale

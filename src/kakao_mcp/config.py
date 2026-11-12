@@ -112,6 +112,21 @@ ROOM_MENU_ICON_OFFSET = (22, 57)  # chat room ≡ menu: (from right edge, y)
 FORM_OPTION_CHECK_X = 32  # radio/checkbox column on the create form
 FORM_CONFIRM_FROM_CENTER = 69  # "확인" sits right of the form center
 FORM_CANCEL_FROM_RIGHT = 62
+# Fixed spots on the open chat window and the create form (422x642), at 100% scale.
+# Each is used only while its template shows the expected view; otherwise OCR finds it.
+OPENCHAT_MAKE_POS = (365, 161)  # "+ 만들기" on the home view scrolled to the top
+FORM_TOPIC_NOTCHES = 3  # wheel notches from the top that show every topic chip
+FORM_TOPIC_POS = {  # chip centers in that view (template "form_topics")
+    "자유수다": (66, 247), "팬덤": (154, 247), "게임": (230, 247), "엔터테인먼트": (330, 247),
+    "스포츠": (60, 289), "일상": (142, 289), "운동/건강": (233, 289), "여행": (323, 289),
+    "취미": (54, 331), "친목/모임": (145, 331), "패션/뷰티": (250, 331), "직업": (340, 331),
+    "자기계발": (66, 373), "재테크": (160, 373),
+}
+FORM_OPTION_POS = {  # checkboxes on the form scrolled to the bottom (template "form_join_settings")
+    "기본프로필만 참여 허용": (32, 233), "검색 허용": (32, 389),
+}
+FORM_SUBMIT_WAIT_SEC = 4.0  # after "확인": the form closes or a dialog shows up
+FORM_TOGGLE_RADIUS = 10  # around a chip/checkbox center: its look changes when toggled
 LEAVE_ACK_CHECK_OFFSET = 20  # owner-leave checkbox sits left of its label
 # Open chat leave confirmations (untitled, owned by the room), by size at 100% scale:
 # "나가기" button and, for the owner, the "위 내용을 모두 확인하였습니다." checkbox that

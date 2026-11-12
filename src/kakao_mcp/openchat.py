@@ -40,7 +40,7 @@ import win32gui
 import win32process
 from PIL import ImageChops
 
-from . import config, controller, ocr
+from . import config, controller, ocr, templates
 from .screen import dpi_scale, px, room_menu_select
 
 _user32 = ctypes.windll.user32
@@ -976,6 +976,82 @@ def _find_on_form(form: int, label: str, max_scrolls: int = 4,
     raise UIError(f"'{label}' not found on the create form")
 
 
+def _toggle_at(hwnd: int, x: float, y: float) -> bool:
+    """Posted click at (x, y) until the spot around it looks different (a chip or a
+    checkbox toggled). False if it never changed."""
+    r = px(hwnd, config.FORM_TOGGLE_RADIUS)
+    box = tuple(round(v) for v in (x - r, y - r, x + r, y + r))
+    before = ocr.grab_window(hwnd).crop(box).convert("L")
+    for _ in range(config.BACKGROUND_CLICK_ATTEMPTS):
+        _post_click(hwnd, x, y)
+        if ImageChops.difference(before, ocr.grab_window(hwnd).crop(box).convert("L")).getbbox():
+            return True
+    return False
+
+
+def _scroll_form(form: int, notches: int, from_top: bool = True):
+    """Posted wheel on the form body: to the top first (``from_top``), then ``notches`` down."""
+    body = _form_body(form)
+    bw, bh = _size(body)
+    if from_top:
+        _post_wheel(body, bw / 2, bh / 2, -10)
+    if notches:
+        _post_wheel(body, bw / 2, bh / 2, notches)
+
+
+def _press_on_form(form: int, view: str, notches: int, spot, label: str,
+                   exclude: Optional[List[str]] = None):
+    """Toggle ``label`` on the form: at its fixed ``spot`` when the scrolled view shows
+    template ``view``, else found with OCR (foreground click, the old way)."""
+    _scroll_form(form, notches)
+    if spot and templates.window_matches(form, view):
+        if _toggle_at(form, px(form, spot[0]), px(form, spot[1])):
+            return
+        raise UIError(f"'{label}' on the create form did not respond to clicks")
+    line = _find_on_form(form, label, exclude=exclude)
+    x = px(form, config.FORM_OPTION_CHECK_X) if label in config.FORM_OPTION_POS else line["cx"]
+    _click(form, x, line["cy"])
+
+
+def _press_confirm(form: int, exclude: Set[int]):
+    """Posted click on the form's "확인". Clicked again only while the form is still up
+    and no new window (the "created" dialog, an error) appeared, so a slow click is
+    never sent twice to a form that already submitted."""
+    w, h = _size(form)
+    x = w / 2 + px(form, config.FORM_CONFIRM_FROM_CENTER)
+    y = h - px(form, config.DIALOG_BUTTON_FROM_BOTTOM)
+    for _ in range(config.BACKGROUND_CLICK_ATTEMPTS):
+        _post_click(form, x, y)
+        if _wait_for(lambda: True if (not _is_open(form) or _kakao_windows() - exclude) else None,
+                     timeout=config.FORM_SUBMIT_WAIT_SEC):
+            return
+    raise UIError("'확인' on the create form did not respond to clicks")
+
+
+def _open_create_form(oc: int) -> int:
+    """Open "오픈채팅 만들기" from the open chat home: posted click on '+ 만들기' when its
+    template is in place (nothing comes to the front), else OCR + click."""
+    _post_wheel(oc, px(oc, 200), px(oc, 300), -10)  # home view scrolled to top so '+ 만들기' is visible
+    is_form = lambda h: win32gui.GetWindowText(h) == "오픈채팅 만들기"  # noqa: E731
+    if templates.window_matches(oc, "openchat_make"):
+        for _ in range(config.BACKGROUND_CLICK_ATTEMPTS):
+            before = _kakao_windows()
+            _post_click(oc, *(px(oc, v) for v in config.OPENCHAT_MAKE_POS))
+            form = _wait_new_window(before, is_form, timeout=2)
+            if form:
+                return form
+    lines = _ocr_window(oc)
+    make = ocr.find_line(lines, "만들기", threshold=0.75)
+    if not make:
+        raise UIError("'+ 만들기' button not found in the open chat window")
+    before = _kakao_windows()
+    _click(oc, make["cx"], make["cy"])
+    form = _wait_new_window(before, is_form, timeout=5)
+    if not form:
+        raise UIError("'오픈채팅 만들기' window did not open")
+    return form
+
+
 def _close_created_dialog(exclude: Set[int], timeout: float = 8) -> str:
     """Close the modal "오픈채팅방을 만들었습니다." shown after creating; return its URL.
 
@@ -1004,16 +1080,7 @@ def create_openchat(name: str, description: str = "", topic: str = "자유수다
 
     oc = open_openchat_window()
     _go_home(oc)
-    _wheel(oc, 200, 300, -10)  # home view scrolled to top so '+ 만들기' is visible
-    lines = _ocr_window(oc)
-    make = ocr.find_line(lines, "만들기", threshold=0.75)
-    if not make:
-        raise UIError("'+ 만들기' button not found in the open chat window")
-    before = _kakao_windows()
-    _click(oc, make["cx"], make["cy"])
-    form = _wait_new_window(before, lambda h: win32gui.GetWindowText(h) == "오픈채팅 만들기", timeout=5)
-    if not form:
-        raise UIError("'오픈채팅 만들기' window did not open")
+    form = _open_create_form(oc)
     time.sleep(0.5)
 
     try:
@@ -1028,28 +1095,18 @@ def create_openchat(name: str, description: str = "", topic: str = "자유수다
                 raise UIError("Description field not found on the create form")
             _paste_text(desc_edit, description)
 
-        chip = _find_on_form(form, topic)
-        _click(form, chip["cx"], chip["cy"])
+        _press_on_form(form, "form_topics", config.FORM_TOPIC_NOTCHES,
+                       config.FORM_TOPIC_POS.get(topic), topic)
+        for label, wanted in (("기본프로필만 참여 허용", kakao_profile_only), ("검색 허용", not searchable)):
+            if wanted:
+                _press_on_form(form, "form_join_settings", 10, config.FORM_OPTION_POS[label], label)
 
-        if kakao_profile_only:
-            opt = _find_on_form(form, "기본프로필만 참여 허용")
-            _click(form, px(form, config.FORM_OPTION_CHECK_X), opt["cy"])
-        if not searchable:
-            opt = _find_on_form(form, "검색 허용")
-            _click(form, px(form, config.FORM_OPTION_CHECK_X), opt["cy"])
-
-        w, h = _size(form)
         exclude = _kakao_windows()
-        _click(form, w / 2 + px(form, config.FORM_CONFIRM_FROM_CENTER), h - px(form, config.DIALOG_BUTTON_FROM_BOTTOM))
+        _press_confirm(form, exclude)
     except Exception:
-        # Leave nothing half-filled behind
-        if win32gui.IsWindow(form):
-            w, h = _size(form)
-            try:
-                _click(form, w - px(form, config.FORM_CANCEL_FROM_RIGHT),
-                       h - px(form, config.DIALOG_BUTTON_FROM_BOTTOM))
-            except Exception:
-                pass
+        # Leave nothing half-filled behind: WM_CLOSE on the form is "취소"
+        if _is_open(form):
+            win32gui.PostMessage(form, WM_CLOSE, 0, 0)
         raise
 
     url = _close_created_dialog(exclude)
