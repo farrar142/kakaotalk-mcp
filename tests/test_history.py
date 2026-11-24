@@ -103,3 +103,38 @@ class TestWrongRoomCopy:
         store.save("dev", self._msgs(20))
         assert "rejected" in store.save("other", self._msgs(20))  # a copy of "dev" under another name
         assert store.save("dev", self._msgs(20))["known"] == 20
+
+
+class TestRecorderInterval:
+    def test_minimum_interval_is_10s(self, tmp_path, monkeypatch):
+        st = _store(tmp_path)
+        rec = history.HistoryRecorder(st)
+        monkeypatch.setattr(history, "capture", lambda room: {"success": True, "new": 0})
+        monkeypatch.setattr(rec, "ensure_running", lambda: None)
+        rec.add(["a", "b"], 3)
+        rec.add(["c"], 10)
+        assert {r["room"]: r["interval_sec"] for r in st.recorded()} == {"a": 10, "b": 10, "c": 10}
+
+    def test_tick_is_well_under_minimum(self):
+        assert history.TICK_SEC * 5 <= history.MIN_INTERVAL_SEC
+
+
+class TestCaptureTiming:
+    def test_logs_lock_wait_and_hold(self, tmp_path, monkeypatch):
+        logs = []
+        monkeypatch.setattr(history, "store", _store(tmp_path))
+        monkeypatch.setattr(history.controller, "_log", logs.append)
+        monkeypatch.setattr(history.controller, "find_chat_window", lambda room: object())
+        monkeypatch.setattr(history.controller, "read_chat_messages",
+                            lambda room: {"success": True, "raw_text": CRLF_SAMPLE})
+        r = history.capture("a")
+        assert r["success"] and r["new"] == 5
+        assert len(logs) == 1 and logs[0].startswith("History capture 'a': lock wait ")
+
+    def test_unopenable_room_still_logs(self, monkeypatch):
+        logs = []
+        monkeypatch.setattr(history.controller, "_log", logs.append)
+        monkeypatch.setattr(history.controller, "find_chat_window", lambda room: None)
+        monkeypatch.setattr(history.controller, "search_and_open_room", lambda room: {"success": False})
+        r = history.capture("x")
+        assert not r["success"] and "could not be opened" in r["error"] and len(logs) == 1

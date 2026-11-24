@@ -367,7 +367,7 @@ def kakao_history_record(room_names: list[str], interval_sec: float = 300) -> Di
 
     Args:
         room_names: Exact titles of the chat rooms to record.
-        interval_sec: Seconds between captures of each room (minimum 60, default 300).
+        interval_sec: Seconds between captures of each room (minimum 10, default 300).
     """
     try:
         if not room_names:
