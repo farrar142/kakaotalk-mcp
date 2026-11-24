@@ -15,8 +15,8 @@ from . import controller, parser
 from .auth.config import DATA_DIR
 
 DB_PATH = DATA_DIR / "history.db"
-MIN_INTERVAL_SEC = 60.0
-TICK_SEC = 5.0
+MIN_INTERVAL_SEC = 10.0
+TICK_SEC = 1.0  # due checks; keep well under MIN_INTERVAL_SEC so a 10s room isn't captured every 15s
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -182,16 +182,21 @@ store = HistoryStore()
 
 
 def capture(room: str) -> Dict:
-    """Copy a room's loaded messages and store them (opening the room if needed)."""
+    """Copy a room's loaded messages and store them (opening the room if needed).
+
+    Logs how long it waited for UI_LOCK and how long it held it, so a short
+    recording interval can be checked against other tools' lock waits.
+    """
+    asked = time.monotonic()
     with controller.UI_LOCK:
-        if controller.find_chat_window(room) is None:
-            opened = controller.search_and_open_room(room)
-            if not opened.get("success") or controller.find_chat_window(room) is None:
-                return {"success": False, "error": f"Chat room '{room}' is not open and could not be opened"}
-        result = controller.read_chat_messages(room)
-        if not result["success"] and "foreground" in result["error"]:
-            time.sleep(1.0)  # focus is often refused only momentarily
-            result = controller.read_chat_messages(room)
+        got = time.monotonic()
+        try:
+            result = _copy_locked(room)
+        finally:
+            done = time.monotonic()
+            controller._log(f"History capture '{room}': lock wait {got - asked:.2f}s, held {done - got:.2f}s")
+    if result is None:
+        return {"success": False, "error": f"Chat room '{room}' is not open and could not be opened"}
     warnings = {"link_warnings": result["link_warnings"]} if result.get("link_warnings") else {}
     if not result["success"]:
         return {"success": False, "error": result["error"], **warnings}
@@ -199,6 +204,19 @@ def capture(room: str) -> Dict:
     if saved.get("rejected"):
         return {"success": False, "error": f"Not saved: {saved['rejected']}", **warnings}
     return {"success": True, "room_name": room, **saved, **warnings}
+
+
+def _copy_locked(room: str) -> Optional[Dict]:
+    """Under UI_LOCK: the room's copied messages, or None if it can't be opened."""
+    if controller.find_chat_window(room) is None:
+        opened = controller.search_and_open_room(room)
+        if not opened.get("success") or controller.find_chat_window(room) is None:
+            return None
+    result = controller.read_chat_messages(room)
+    if not result["success"] and "foreground" in result["error"]:
+        time.sleep(1.0)  # focus is often refused only momentarily
+        result = controller.read_chat_messages(room)
+    return result
 
 
 class HistoryRecorder:

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - 대화 기록 DB (SQLite, `history.db`): `kakao_history_record` / `kakao_history_stop` / `kakao_history_status` / `kakao_history_search`
-  - 방별 주기 수집(최소 60초), 기록 대상은 DB에 남아 서버 재시작 후 이어서 수집
+  - 방별 주기 수집(최소 10초), 기록 대상은 DB에 남아 서버 재시작 후 이어서 수집
   - 날짜·기간·키워드·보낸 사람·최근 N건 검색
   - `kakao_read_messages`와 키워드 모니터가 읽은 메시지도 저장
 - `kakao_read_board` — 톡게시판(공지 / 일정 / 투표 / 퀴즈) 글 목록과 본문 읽기
